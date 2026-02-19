@@ -21,7 +21,7 @@ export function Dashboard({ token }: Props) {
     const bot = createBot(token);
     bot.catch(() => setStatus("stopped"));
     botRef.current = bot;
-    bot.start({ onStart: () => setStatus("running") });
+    bot.start({ onStart: () => setStatus("running") }).catch(() => setStatus("stopped"));
   }
 
   async function stop() {
@@ -37,10 +37,10 @@ export function Dashboard({ token }: Props) {
   }, []);
 
   useInput((input) => {
-    if (input === "q") stop().then(() => exit());
+    if (input === "q") stop().then(() => exit()).catch(() => exit());
     if (input === "s" && status === "stopped") start();
     if (input === "x" && status === "running") stop();
-    if (input === "r") stop().then(() => start());
+    if (input === "r") stop().then(() => start()).catch(() => {});
     if (input === "c") clearLogs();
   });
 
