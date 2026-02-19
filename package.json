@@ -2,18 +2,26 @@
   "name": "claude-voice",
   "version": "1.0.0",
   "type": "module",
+  "bin": {
+    "claude-voice": "src/tui.tsx"
+  },
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "tui": "tsx src/tui.tsx"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
     "@anthropic-ai/sdk": "latest",
     "grammy": "latest",
-    "openai": "latest"
+    "ink": "latest",
+    "ink-text-input": "latest",
+    "openai": "latest",
+    "react": "latest"
   },
   "devDependencies": {
     "@types/node": "latest",
+    "@types/react": "latest",
     "tsx": "latest",
     "typescript": "latest"
   }
