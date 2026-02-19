@@ -6,6 +6,35 @@ import { log } from "../logger.js";
 let registeredBot: Bot | null = null;
 let registeredChatId: number | null = null;
 
+function splitMessage(text: string, limit = 4000): string[] {
+  if (text.length <= limit) return [text];
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > limit) {
+    let splitAt = remaining.lastIndexOf("\n", limit);
+    if (splitAt <= 0) splitAt = limit;
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt).replace(/^\n/, "");
+  }
+  if (remaining.length > 0) chunks.push(remaining);
+  return chunks;
+}
+
+async function sendMarkdownMessage(bot: Bot, chatId: number, text: string): Promise<void> {
+  for (const chunk of splitMessage(text)) {
+    try {
+      await bot.api.sendMessage(chatId, chunk, { parse_mode: "Markdown" });
+    } catch {
+      await bot.api.sendMessage(chatId, chunk);
+    }
+  }
+}
+
+export async function sendPing(text: string): Promise<void> {
+  if (!registeredBot || !registeredChatId) return;
+  await registeredBot.api.sendMessage(registeredChatId, text).catch(() => {});
+}
+
 export function registerForNotifications(bot: Bot, chatId: number): void {
   registeredBot = bot;
   registeredChatId = chatId;
@@ -47,10 +76,10 @@ export async function notifyResponse(state: SessionResponseState): Promise<void>
   const attached = await getAttachedSession().catch(() => null);
   if (!attached || attached.sessionId !== state.sessionId) return;
 
-  const text = `[claude-code] ${state.text.slice(0, 1000)}`;
+  const text = `[claude-code] ${state.text}`;
   try {
-    await registeredBot.api.sendMessage(registeredChatId, text);
-    log({ chatId: registeredChatId, message: `notified response: ${state.projectName} (${text.slice(0, 60)})` });
+    await sendMarkdownMessage(registeredBot, registeredChatId, text);
+    log({ chatId: registeredChatId, message: `notified response: ${state.projectName} (${state.text.slice(0, 60)})` });
   } catch (err) {
     log({ message: `failed to send response notification: ${err instanceof Error ? err.message : String(err)}` });
   }

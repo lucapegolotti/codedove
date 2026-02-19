@@ -3,11 +3,11 @@ import { handleTurn, clearChatState } from "../agent/loop.js";
 import { transcribeAudio, synthesizeSpeech } from "../voice.js";
 import { log } from "../logger.js";
 import { listSessions, ATTACHED_SESSION_PATH, getAttachedSession, getSessionFilePath } from "../session/history.js";
-import { registerForNotifications, resolveWaitingAction, notifyResponse } from "./notifications.js";
+import { registerForNotifications, resolveWaitingAction, notifyResponse, sendPing } from "./notifications.js";
 import { injectInput } from "../session/tmux.js";
 import { clearAdapterSession } from "../session/adapter.js";
 import { watchForResponse, getFileSize } from "../session/monitor.js";
-import { writeFile, mkdir } from "fs/promises";
+import { writeFile, mkdir, unlink } from "fs/promises";
 import { homedir } from "os";
 
 const pendingSessions = new Map<string, { sessionId: string; cwd: string; projectName: string }>();
@@ -19,6 +19,30 @@ function timeAgo(date: Date): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+function splitMessage(text: string, limit = 4000): string[] {
+  if (text.length <= limit) return [text];
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > limit) {
+    let splitAt = remaining.lastIndexOf("\n", limit);
+    if (splitAt <= 0) splitAt = limit;
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt).replace(/^\n/, "");
+  }
+  if (remaining.length > 0) chunks.push(remaining);
+  return chunks;
+}
+
+async function sendMarkdownReply(ctx: Context, text: string): Promise<void> {
+  for (const chunk of splitMessage(text)) {
+    try {
+      await ctx.reply(chunk, { parse_mode: "Markdown" });
+    } catch {
+      await ctx.reply(chunk);
+    }
+  }
 }
 
 async function sendSessionPicker(ctx: Context): Promise<void> {
@@ -43,10 +67,30 @@ async function sendSessionPicker(ctx: Context): Promise<void> {
   await ctx.reply(`Available sessions:\n\n${lines.join("\n\n")}`, { reply_markup: keyboard });
 }
 
+async function ensureSession(
+  ctx: Context,
+  chatId: number
+): Promise<{ sessionId: string; cwd: string } | null> {
+  const existing = await getAttachedSession();
+  if (existing) return existing;
+
+  const recent = await listSessions(1);
+  if (recent.length === 0) return null;
+
+  const s = recent[0];
+  await mkdir(`${homedir()}/.claude-voice`, { recursive: true });
+  await writeFile(ATTACHED_SESSION_PATH, `${s.sessionId}\n${s.cwd}`, "utf8");
+  clearChatState(chatId);
+  clearAdapterSession(chatId);
+  await ctx.reply(`Auto-attached to \`${s.projectName}\`.`, { parse_mode: "Markdown" });
+  return { sessionId: s.sessionId, cwd: s.cwd };
+}
+
 let activeWatcherStop: (() => void) | null = null;
 
 async function startInjectionWatcher(
   attached: { sessionId: string; cwd: string },
+  chatId: number,
   onDone?: () => void
 ): Promise<void> {
   // Stop any watcher from a previous injection — prevents duplicate notifications
@@ -63,14 +107,20 @@ async function startInjectionWatcher(
   }
   const baseline = await getFileSize(filePath);
   log({ message: `watchForResponse started for ${attached.sessionId.slice(0, 8)}, baseline=${baseline}` });
-  activeWatcherStop = watchForResponse(filePath, baseline, async (state) => {
-    onDone?.();
-    await notifyResponse(state);
-  });
+  activeWatcherStop = watchForResponse(
+    filePath,
+    baseline,
+    async (state) => {
+      onDone?.();
+      await notifyResponse(state);
+    },
+    120_000,
+    () => sendPing("⏳ Still working...")
+  );
 }
 
 async function processTextTurn(ctx: Context, chatId: number, text: string): Promise<void> {
-  const attached = await getAttachedSession();
+  const attached = await ensureSession(ctx, chatId);
   const reply = await handleTurn(chatId, text, undefined, attached?.cwd);
 
   if (reply === "__SESSION_PICKER__") {
@@ -84,7 +134,7 @@ async function processTextTurn(ctx: Context, chatId: number, text: string): Prom
       ctx.replyWithChatAction("typing").catch(() => {});
     }, 4000);
     if (attached) {
-      await startInjectionWatcher(attached, () => clearInterval(typingInterval));
+      await startInjectionWatcher(attached, chatId, () => clearInterval(typingInterval));
     } else {
       clearInterval(typingInterval);
     }
@@ -92,7 +142,7 @@ async function processTextTurn(ctx: Context, chatId: number, text: string): Prom
   }
 
   log({ chatId, direction: "out", message: reply });
-  await ctx.reply(reply);
+  await sendMarkdownReply(ctx, reply);
 }
 
 export function createBot(token: string): Bot {
@@ -129,7 +179,7 @@ export function createBot(token: string): Bot {
       const transcript = await transcribeAudio(audioBuffer, "voice.ogg");
       log({ chatId, direction: "in", message: transcript });
 
-      const attached = await getAttachedSession();
+      const attached = await ensureSession(ctx, chatId);
       const reply = await handleTurn(chatId, transcript, undefined, attached?.cwd);
 
       if (reply === "__SESSION_PICKER__") {
@@ -143,7 +193,7 @@ export function createBot(token: string): Bot {
           ctx.replyWithChatAction("typing").catch(() => {});
         }, 4000);
         if (attached) {
-          await startInjectionWatcher(attached, () => clearInterval(typingInterval));
+          await startInjectionWatcher(attached, chatId, () => clearInterval(typingInterval));
         } else {
           clearInterval(typingInterval);
         }
@@ -161,6 +211,40 @@ export function createBot(token: string): Bot {
 
   bot.command("sessions", async (ctx) => {
     await sendSessionPicker(ctx);
+  });
+
+  bot.command("detach", async (ctx) => {
+    try {
+      await unlink(ATTACHED_SESSION_PATH);
+    } catch {
+      // file did not exist
+    }
+    clearChatState(ctx.chat.id);
+    clearAdapterSession(ctx.chat.id);
+    if (activeWatcherStop) {
+      activeWatcherStop();
+      activeWatcherStop = null;
+    }
+    await ctx.reply("Detached.");
+  });
+
+  bot.command("status", async (ctx) => {
+    const attached = await getAttachedSession();
+    if (!attached) {
+      await ctx.reply("No session attached. Use /sessions to pick one.");
+      return;
+    }
+    const sessions = await listSessions(20);
+    const info = sessions.find((s) => s.sessionId === attached.sessionId);
+    const projectName = info?.projectName ?? "(unknown)";
+    const lines = [
+      `*Attached session*`,
+      `Project: \`${projectName}\``,
+      `Directory: \`${attached.cwd}\``,
+      `Session: \`${attached.sessionId.slice(0, 8)}…\``,
+      `Watcher: ${activeWatcherStop ? "⏳ active" : "✅ idle"}`,
+    ];
+    await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
   });
 
   bot.on("callback_query:data", async (ctx) => {
@@ -183,6 +267,7 @@ export function createBot(token: string): Bot {
           if (result.found) {
             await ctx.answerCallbackQuery({ text: "Sent!" });
             await ctx.reply(`Sent "${input || "↩"}". Claude is resuming.`);
+            await startInjectionWatcher(attached, ctx.chat!.id);
           } else {
             await ctx.answerCallbackQuery({ text: "Could not find tmux pane." });
           }
@@ -202,7 +287,6 @@ export function createBot(token: string): Bot {
       }
       await mkdir(`${homedir()}/.claude-voice`, { recursive: true });
       await writeFile(ATTACHED_SESSION_PATH, `${session.sessionId}\n${session.cwd}`, "utf8");
-      // Clear bot conversation context so the new session starts fresh
       clearChatState(ctx.chat!.id);
       clearAdapterSession(ctx.chat!.id);
       await ctx.answerCallbackQuery({ text: "Attached!" });

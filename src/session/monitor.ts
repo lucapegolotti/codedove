@@ -82,7 +82,7 @@ function sessionIdFromPath(filePath: string): { sessionId: string; projectDir: s
 
 const DEBOUNCE_MS = 3000;
 
-export function startMonitor(onWaiting: WaitingCallback, onResponse?: ResponseCallback): () => void {
+export function startMonitor(onWaiting: WaitingCallback): () => void {
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   // Track last text we notified per file to avoid duplicate notifications
   const lastNotified = new Map<string, string>();
@@ -140,11 +140,6 @@ export function startMonitor(onWaiting: WaitingCallback, onResponse?: ResponseCa
         await onWaiting({ sessionId, projectName, cwd, filePath, waitingType, prompt: lastText }).catch(
           (err) => log({ message: `notification error: ${err instanceof Error ? err.message : String(err)}` })
         );
-      } else if (onResponse) {
-        log({ message: `session ${sessionId.slice(0, 8)} responded: ${lastText.slice(0, 80)}` });
-        await onResponse({ sessionId, projectName, cwd, filePath, text: lastText }).catch(
-          (err) => log({ message: `response notification error: ${err instanceof Error ? err.message : String(err)}` })
-        );
       }
     }, DEBOUNCE_MS);
 
@@ -169,7 +164,8 @@ export function watchForResponse(
   filePath: string,
   baselineSize: number,
   onResponse: ResponseCallback,
-  timeoutMs = 300_000
+  timeoutMs = 120_000,
+  onPing?: () => void
 ): () => void {
   const parts = filePath.split("/");
   const sessionId = parts[parts.length - 1].replace(".jsonl", "");
@@ -189,8 +185,13 @@ export function watchForResponse(
 
   const cleanup = () => {
     if (debounceTimer) clearTimeout(debounceTimer);
+    clearTimeout(pingId);
     watcher.close();
   };
+
+  const pingId = setTimeout(() => {
+    if (!done && lastSentText === null) onPing?.();
+  }, 60_000);
 
   const timeoutId = setTimeout(() => {
     if (!done) {
