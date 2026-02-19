@@ -1,6 +1,8 @@
 import { Bot, Context, InputFile, InlineKeyboard } from "grammy";
 import { handleTurn, clearChatState } from "../agent/loop.js";
-import { transcribeAudio, synthesizeSpeech } from "../voice.js";
+import { transcribeAudio, synthesizeSpeech, polishTranscript } from "../voice.js";
+import { narrate } from "../narrator.js";
+import type { SessionResponseState } from "../session/monitor.js";
 import { log } from "../logger.js";
 import { listSessions, ATTACHED_SESSION_PATH, getAttachedSession, getSessionFilePath } from "../session/history.js";
 import { registerForNotifications, resolveWaitingAction, notifyResponse, sendPing } from "./notifications.js";
@@ -91,7 +93,8 @@ let activeWatcherStop: (() => void) | null = null;
 async function startInjectionWatcher(
   attached: { sessionId: string; cwd: string },
   chatId: number,
-  onDone?: () => void
+  onDone?: () => void,
+  onResponse?: (state: SessionResponseState) => Promise<void>
 ): Promise<void> {
   // Stop any watcher from a previous injection — prevents duplicate notifications
   if (activeWatcherStop) {
@@ -112,7 +115,7 @@ async function startInjectionWatcher(
     baseline,
     async (state) => {
       onDone?.();
-      await notifyResponse(state);
+      await (onResponse ?? notifyResponse)(state);
     },
     120_000,
     () => sendPing("⏳ Still working...")
@@ -177,10 +180,11 @@ export function createBot(token: string): Bot {
       const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
 
       const transcript = await transcribeAudio(audioBuffer, "voice.ogg");
-      log({ chatId, direction: "in", message: transcript });
+      const polished = await polishTranscript(transcript);
+      log({ chatId, direction: "in", message: `[voice] ${transcript} → polished: ${polished}` });
 
       const attached = await ensureSession(ctx, chatId);
-      const reply = await handleTurn(chatId, transcript, undefined, attached?.cwd);
+      const reply = await handleTurn(chatId, polished, undefined, attached?.cwd);
 
       if (reply === "__SESSION_PICKER__") {
         await sendSessionPicker(ctx);
@@ -192,8 +196,29 @@ export function createBot(token: string): Bot {
         const typingInterval = setInterval(() => {
           ctx.replyWithChatAction("typing").catch(() => {});
         }, 4000);
+
         if (attached) {
-          await startInjectionWatcher(attached, chatId, () => clearInterval(typingInterval));
+          // Debounce across all text blocks then narrate + send audio
+          let lastText = "";
+          let responseTimer: ReturnType<typeof setTimeout> | null = null;
+
+          const voiceResponseHandler = async (state: SessionResponseState) => {
+            lastText = state.text;
+            if (responseTimer) clearTimeout(responseTimer);
+            responseTimer = setTimeout(async () => {
+              try {
+                const summary = await narrate(lastText, polished);
+                const audio = await synthesizeSpeech(summary);
+                await ctx.replyWithVoice(new InputFile(audio, "reply.mp3"));
+                log({ chatId, direction: "out", message: `[voice response] ${summary.slice(0, 80)}` });
+              } catch (err) {
+                log({ chatId, message: `Voice response error: ${err instanceof Error ? err.message : String(err)}` });
+                await ctx.reply(lastText).catch(() => {});
+              }
+            }, 3000);
+          };
+
+          await startInjectionWatcher(attached, chatId, () => clearInterval(typingInterval), voiceResponseHandler);
         } else {
           clearInterval(typingInterval);
         }
