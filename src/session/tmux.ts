@@ -18,17 +18,19 @@ function isClaudePane(p: TmuxPane): boolean {
   return p.command.includes("claude") || /^\d+\.\d+\.\d+/.test(p.command);
 }
 
-export function findBestPane(panes: TmuxPane[], targetCwd: string): TmuxPane | null {
+export function findBestPane(panes: TmuxPane[], targetCwd: string): TmuxPane | "ambiguous" | null {
   const claudePanes = panes.filter(isClaudePane);
   if (claudePanes.length === 0) return null;
 
-  // Exact match first
-  const exact = claudePanes.find((p) => p.cwd === targetCwd);
-  if (exact) return exact;
+  // Exact match — if multiple panes share the same cwd, we can't pick safely
+  const exact = claudePanes.filter((p) => p.cwd === targetCwd);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return "ambiguous";
 
   // Parent directory match (e.g. cwd is a subdir of the pane's path)
-  const parent = claudePanes.find((p) => targetCwd.startsWith(p.cwd + "/"));
-  if (parent) return parent;
+  const parents = claudePanes.filter((p) => targetCwd.startsWith(p.cwd + "/"));
+  if (parents.length === 1) return parents[0];
+  if (parents.length > 1) return "ambiguous";
 
   return null;
 }
@@ -65,6 +67,7 @@ export async function findClaudePane(targetCwd: string): Promise<TmuxResult> {
   if (panes.length === 0) return { found: false, reason: "no_tmux" };
 
   const best = findBestPane(panes, targetCwd);
+  if (best === "ambiguous") return { found: false, reason: "ambiguous", panes: panes.filter(isClaudePane) };
   if (best) return { found: true, paneId: best.paneId };
 
   const claudePanes = panes.filter(isClaudePane);

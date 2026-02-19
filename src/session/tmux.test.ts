@@ -33,13 +33,13 @@ describe("findBestPane", () => {
     expect(result).toBeNull();
   });
 
-  it("returns first claude pane when multiple match cwd", () => {
+  it("returns ambiguous when multiple claude panes share the same cwd", () => {
     const dupe: TmuxPane[] = [
       { paneId: "%2", command: "claude", cwd: "/Users/luca/repositories/my-app" },
       { paneId: "%5", command: "claude", cwd: "/Users/luca/repositories/my-app" },
     ];
     const result = findBestPane(dupe, "/Users/luca/repositories/my-app");
-    expect(result?.paneId).toBe("%2");
+    expect(result).toBe("ambiguous");
   });
 
   it("falls back to parent directory match", () => {
