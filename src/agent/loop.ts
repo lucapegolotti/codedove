@@ -30,7 +30,7 @@ export async function handleTurn(
 
   let reply: string;
 
-  const agentReply = (text: string) => `[agent] ${text}`;
+  const agentReply = (text: string) => `\`[agent]\` ${text}`;
 
   switch (intent) {
     case Intent.SUMMARY_REQUEST: {
