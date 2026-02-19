@@ -1,10 +1,11 @@
 import { Bot, Context, InputFile, InlineKeyboard } from "grammy";
-import { handleTurn } from "../agent/loop.js";
+import { handleTurn, clearChatState } from "../agent/loop.js";
 import { transcribeAudio, synthesizeSpeech } from "../voice.js";
 import { log } from "../logger.js";
 import { listSessions, ATTACHED_SESSION_PATH, getAttachedSession, getSessionFilePath } from "../session/history.js";
 import { registerForNotifications, resolveWaitingAction, notifyResponse } from "./notifications.js";
 import { injectInput } from "../session/tmux.js";
+import { clearAdapterSession } from "../session/adapter.js";
 import { watchForResponse, getFileSize } from "../session/monitor.js";
 import { writeFile, mkdir } from "fs/promises";
 import { homedir } from "os";
@@ -193,6 +194,9 @@ export function createBot(token: string): Bot {
       }
       await mkdir(`${homedir()}/.claude-voice`, { recursive: true });
       await writeFile(ATTACHED_SESSION_PATH, `${session.sessionId}\n${session.cwd}`, "utf8");
+      // Clear bot conversation context so the new session starts fresh
+      clearChatState(ctx.chat!.id);
+      clearAdapterSession(ctx.chat!.id);
       await ctx.answerCallbackQuery({ text: "Attached!" });
       await ctx.reply(`Attached to \`${session.projectName}\`. Send your first message.`, {
         parse_mode: "Markdown",

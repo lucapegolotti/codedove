@@ -15,6 +15,10 @@ export function getActiveSessions(): number[] {
   return [...sessions.keys()];
 }
 
+export function clearAdapterSession(chatId: number): void {
+  sessions.delete(chatId);
+}
+
 export async function runAgentTurn(chatId: number, userMessage: string): Promise<string> {
   const attached = await getAttachedSession();
   const existingSessionId = attached?.sessionId ?? sessions.get(chatId);

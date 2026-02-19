@@ -11,6 +11,10 @@ export function updateChatState(chatId: number, lastBotMessage: string, cwd?: st
   chatState.set(chatId, { lastBotMessage, lastCwd: cwd });
 }
 
+export function clearChatState(chatId: number): void {
+  chatState.delete(chatId);
+}
+
 export async function handleTurn(
   chatId: number,
   userMessage: string,
