@@ -1,6 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+let anthropic: Anthropic | null = null;
+function getClient(): Anthropic {
+  return (anthropic ??= new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }));
+}
 
 const SYSTEM = `You are a friendly assistant relaying what a coding agent just did.
 Given the agent's response, write a concise conversational reply in 1-3 sentences of plain text.
@@ -9,7 +12,7 @@ If the agent completed a task, describe what it did. If it needs more info, rela
 
 export async function narrate(agentResult: string): Promise<string> {
   try {
-    const response = await anthropic.messages.create({
+    const response = await getClient().messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 256,
       system: SYSTEM,

@@ -1,10 +1,13 @@
 import OpenAI from "openai";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+let openai: OpenAI | null = null;
+function getClient(): OpenAI {
+  return (openai ??= new OpenAI({ apiKey: process.env.OPENAI_API_KEY }));
+}
 
 export async function transcribeAudio(audioBuffer: Buffer, filename: string): Promise<string> {
   const file = new File([new Uint8Array(audioBuffer)], filename, { type: "audio/ogg" });
-  const transcription = await openai.audio.transcriptions.create({
+  const transcription = await getClient().audio.transcriptions.create({
     file,
     model: "whisper-1",
   });
@@ -12,7 +15,7 @@ export async function transcribeAudio(audioBuffer: Buffer, filename: string): Pr
 }
 
 export async function synthesizeSpeech(text: string): Promise<Buffer> {
-  const response = await openai.audio.speech.create({
+  const response = await getClient().audio.speech.create({
     model: "tts-1",
     voice: "nova",
     input: text,
