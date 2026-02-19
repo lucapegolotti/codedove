@@ -68,7 +68,6 @@ export function createBot(token: string): Bot {
   bot.on("message:voice", async (ctx) => {
     const chatId = ctx.chat.id;
     await ctx.replyWithChatAction("record_voice");
-    log({ chatId, direction: "in", message: "[voice note]" });
 
     try {
       const file = await ctx.getFile();
@@ -79,7 +78,7 @@ export function createBot(token: string): Bot {
       const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
 
       const transcript = await transcribeAudio(audioBuffer, "voice.ogg");
-      log({ chatId, message: `transcribed: "${transcript}"` });
+      log({ chatId, direction: "in", message: transcript });
 
       if (await detectSessionListIntent(transcript)) {
         await sendSessionPicker(ctx);
@@ -87,7 +86,7 @@ export function createBot(token: string): Bot {
       }
 
       const replyText = await runAgentTurn(chatId, transcript);
-      log({ chatId, direction: "out", message: "[voice reply]" });
+      log({ chatId, direction: "out", message: replyText });
       const audioReply = await synthesizeSpeech(replyText);
       await ctx.replyWithVoice(new InputFile(audioReply, "reply.mp3"));
     } catch (err) {
