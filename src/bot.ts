@@ -1,25 +1,23 @@
-import { Bot, InputFile } from "grammy";
-import { runAgentTurn } from "./sessions.js";
+import { Bot, Context, InputFile, InlineKeyboard } from "grammy";
+import { runAgentTurn, listSessions, SessionInfo, ATTACHED_SESSION_PATH } from "./sessions.js";
 import { transcribeAudio, synthesizeSpeech } from "./voice.js";
 import { log } from "./logger.js";
-import { InlineKeyboard } from "grammy";
-import { listSessions, SessionInfo } from "./sessions.js";
 import { detectSessionListIntent } from "./intent.js";
 import { writeFile, mkdir } from "fs/promises";
 import { homedir } from "os";
 
-const ATTACHED_SESSION_PATH = `${homedir()}/.claude-voice/attached`;
 const pendingSessions = new Map<string, SessionInfo>();
 
 function timeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds <= 0) return "just now";
   if (seconds < 60) return `${seconds}s ago`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-async function sendSessionPicker(ctx: { reply: Function }): Promise<void> {
+async function sendSessionPicker(ctx: Context): Promise<void> {
   const sessions = await listSessions();
   if (sessions.length === 0) {
     await ctx.reply("No sessions found.");
@@ -27,6 +25,7 @@ async function sendSessionPicker(ctx: { reply: Function }): Promise<void> {
   }
 
   const keyboard = new InlineKeyboard();
+  pendingSessions.clear();
   for (const s of sessions) {
     pendingSessions.set(s.sessionId, s);
     const label = `${s.projectName} · ${timeAgo(s.mtime)}`;

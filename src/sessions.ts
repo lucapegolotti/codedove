@@ -8,7 +8,7 @@ import { createInterface } from "readline";
 
 const sessions = new Map<number, string>();
 
-const ATTACHED_SESSION_PATH = `${homedir()}/.claude-voice/attached`;
+export const ATTACHED_SESSION_PATH = `${homedir()}/.claude-voice/attached`;
 
 export type SessionInfo = {
   sessionId: string;
