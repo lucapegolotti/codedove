@@ -1,6 +1,6 @@
 import { createReadStream } from "fs";
 import { createInterface } from "readline";
-import { readdir, stat } from "fs/promises";
+import { readdir, readFile, stat } from "fs/promises";
 import { homedir } from "os";
 
 export const PROJECTS_PATH = `${homedir()}/.claude/projects`;
@@ -144,7 +144,6 @@ export async function listSessions(limit = 5): Promise<SessionInfo[]> {
 
 export async function getAttachedSession(): Promise<{ sessionId: string; cwd: string } | null> {
   try {
-    const { readFile } = await import("fs/promises");
     const content = await readFile(ATTACHED_SESSION_PATH, "utf8");
     const [sessionId, cwd] = content.trim().split("\n");
     if (!sessionId) return null;
