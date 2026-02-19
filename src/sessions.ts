@@ -32,7 +32,9 @@ export async function runAgentTurn(chatId: number, userMessage: string): Promise
 
   if (attachedSessionId) {
     log({ chatId, message: `joining attached session ${attachedSessionId.slice(0, 8)}...` });
-  } else if (!existingSessionId) {
+  } else if (existingSessionId) {
+    log({ chatId, message: `resuming session ${existingSessionId.slice(0, 8)}...` });
+  } else {
     log({ chatId, message: "starting new session" });
   }
 
