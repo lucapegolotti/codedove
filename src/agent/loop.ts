@@ -63,7 +63,19 @@ export async function handleTurn(
     case Intent.COMMAND_EXECUTION:
     case Intent.UNKNOWN:
     default: {
-      reply = await runAgentTurn(chatId, userMessage);
+      if (cwd) {
+        const result = await injectInput(cwd, userMessage);
+        if (result.found) {
+          reply = `Sent to Claude. I'll let you know when it responds.`;
+        } else if (result.reason === "ambiguous") {
+          reply = `Multiple Claude sessions found. Please use /sessions to attach to the right one first.`;
+        } else {
+          // No tmux pane found — fall back to Agent SDK
+          reply = await runAgentTurn(chatId, userMessage);
+        }
+      } else {
+        reply = await runAgentTurn(chatId, userMessage);
+      }
       break;
     }
   }
