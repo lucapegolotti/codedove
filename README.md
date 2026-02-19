@@ -48,6 +48,26 @@ npm start
 
 The bot will print `claude-voice bot running` once it's polling.
 
+### 4. Launch the dashboard
+
+```bash
+npm run tui
+```
+
+Or register the global `claude-voice` command (one-time):
+
+```bash
+npm link
+```
+
+Then launch from anywhere:
+
+```bash
+claude-voice
+```
+
+On first run without a `.env`, a setup wizard walks you through entering your three API keys.
+
 ## Usage
 
 Open Telegram, find your bot, and start chatting.
