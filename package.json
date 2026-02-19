@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "bin": {
-    "claude-voice": "src/tui.tsx"
+    "claude-voice": "bin/claude-voice"
   },
   "scripts": {
     "start": "tsx src/index.ts",
