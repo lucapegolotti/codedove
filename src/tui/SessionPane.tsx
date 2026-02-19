@@ -7,9 +7,9 @@ export function SessionPane() {
   const [sessions, setSessions] = useState<number[]>(getActiveSessions());
 
   useEffect(() => {
-    const onLog = () => setSessions(getActiveSessions());
-    logEmitter.on("log", onLog);
-    return () => { logEmitter.off("log", onLog); };
+    const onSession = () => setSessions(getActiveSessions());
+    logEmitter.on("session", onSession);
+    return () => { logEmitter.off("session", onSession); };
   }, []);
 
   return (

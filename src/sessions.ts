@@ -1,6 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { narrate } from "./narrator.js";
-import { log } from "./logger.js";
+import { log, logEmitter } from "./logger.js";
 import { homedir } from "os";
 
 const sessions = new Map<number, string>();
@@ -49,6 +49,7 @@ export async function runAgentTurn(chatId: number, userMessage: string): Promise
   if (capturedSessionId) {
     sessions.set(chatId, capturedSessionId);
     log({ chatId, message: "session established" });
+    logEmitter.emit("session");
   }
 
   return narrate(result || "The agent completed the task but produced no output.");
