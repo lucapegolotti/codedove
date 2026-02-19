@@ -20,7 +20,11 @@ function loadEnv(): Record<string, string> {
       .filter(l => l.includes("="))
       .map(l => {
         const idx = l.indexOf("=");
-        return [l.slice(0, idx).trim(), l.slice(idx + 1).trim()];
+        let val = l.slice(idx + 1).trim();
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        return [l.slice(0, idx).trim(), val];
       })
   );
 }
