@@ -5,9 +5,9 @@ const execAsync = promisify(exec);
 
 export type TmuxPane = {
   paneId: string;
+  shellPid: number; // #{pane_pid} — the shell process in the pane
   command: string;
   cwd: string;
-  lastUsed: number; // unix timestamp from #{pane_last_used}
 };
 
 export type TmuxResult =
@@ -19,29 +19,37 @@ function isClaudePane(p: TmuxPane): boolean {
   return p.command.includes("claude") || /^\d+\.\d+\.\d+/.test(p.command);
 }
 
-function mostRecent(panes: TmuxPane[]): TmuxPane {
-  return panes.reduce((a, b) => (b.lastUsed > a.lastUsed ? b : a));
+// Returns the start time (ms) of the claude child process inside a pane's shell.
+// Used to pick the most recently started session when multiple panes share a cwd.
+async function getClaudeChildStartTime(shellPid: number): Promise<number> {
+  try {
+    const { stdout: childOut } = await execAsync(
+      `ps -A -o pid= -o ppid= | awk '$2 == ${shellPid} {print $1}'`
+    );
+    const childPid = childOut.trim();
+    if (!childPid) return 0;
+    const { stdout: startOut } = await execAsync(`ps -p ${childPid} -o lstart=`);
+    return new Date(startOut.trim()).getTime();
+  } catch {
+    return 0;
+  }
 }
 
-export function findBestPane(panes: TmuxPane[], targetCwd: string): TmuxPane | null {
+export function findBestPane(panes: TmuxPane[], targetCwd: string): TmuxPane[] {
   const claudePanes = panes.filter(isClaudePane);
-  if (claudePanes.length === 0) return null;
+  if (claudePanes.length === 0) return [];
 
-  // Exact match — if multiple, pick the most recently used
   const exact = claudePanes.filter((p) => p.cwd === targetCwd);
-  if (exact.length >= 1) return mostRecent(exact);
+  if (exact.length > 0) return exact;
 
-  // Parent directory match — if multiple, pick the most recently used
   const parents = claudePanes.filter((p) => targetCwd.startsWith(p.cwd + "/"));
-  if (parents.length >= 1) return mostRecent(parents);
-
-  return null;
+  return parents;
 }
 
 export async function listTmuxPanes(): Promise<TmuxPane[]> {
   try {
     const { stdout } = await execAsync(
-      "tmux list-panes -a -F '#{pane_id} #{pane_last_used} #{pane_current_command} #{pane_current_path}'"
+      "tmux list-panes -a -F '#{pane_id} #{pane_pid} #{pane_current_command} #{pane_current_path}'"
     );
     return stdout
       .trim()
@@ -50,10 +58,10 @@ export async function listTmuxPanes(): Promise<TmuxPane[]> {
       .map((line) => {
         const parts = line.split(" ");
         const paneId = parts[0];
-        const lastUsed = parseInt(parts[1], 10) || 0;
+        const shellPid = parseInt(parts[1], 10) || 0;
         const command = parts[2];
         const cwd = parts.slice(3).join(" "); // handle spaces in paths
-        return { paneId, lastUsed, command, cwd };
+        return { paneId, shellPid, command, cwd };
       });
   } catch {
     return [];
@@ -70,14 +78,26 @@ export async function findClaudePane(targetCwd: string): Promise<TmuxResult> {
 
   if (panes.length === 0) return { found: false, reason: "no_tmux" };
 
-  const best = findBestPane(panes, targetCwd);
-  if (best) return { found: true, paneId: best.paneId };
+  const candidates = findBestPane(panes, targetCwd);
 
+  if (candidates.length === 1) {
+    return { found: true, paneId: candidates[0].paneId };
+  }
+
+  if (candidates.length > 1) {
+    // Multiple panes at same cwd — pick the one with the most recently started claude process
+    const withTimes = await Promise.all(
+      candidates.map(async (p) => ({ pane: p, startTime: await getClaudeChildStartTime(p.shellPid) }))
+    );
+    const best = withTimes.reduce((a, b) => (b.startTime > a.startTime ? b : a));
+    return { found: true, paneId: best.pane.paneId };
+  }
+
+  // No cwd match — fall back to any single claude pane
   const claudePanes = panes.filter(isClaudePane);
   if (claudePanes.length === 0) return { found: false, reason: "no_claude_pane" };
   if (claudePanes.length > 1) return { found: false, reason: "ambiguous", panes: claudePanes };
 
-  // One claude pane exists but cwd doesn't match — use it anyway
   return { found: true, paneId: claudePanes[0].paneId };
 }
 
