@@ -8,11 +8,14 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "tui": "tsx src/tui.tsx"
+    "tui": "tsx src/tui.tsx",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
     "@anthropic-ai/sdk": "latest",
+    "chokidar": "^5.0.0",
     "grammy": "latest",
     "ink": "latest",
     "ink-text-input": "latest",
@@ -22,7 +25,9 @@
   "devDependencies": {
     "@types/node": "latest",
     "@types/react": "latest",
+    "@vitest/coverage-v8": "^4.0.18",
     "tsx": "latest",
-    "typescript": "latest"
+    "typescript": "latest",
+    "vitest": "^4.0.18"
   }
 }
