@@ -47,7 +47,7 @@ export async function notifyResponse(state: SessionResponseState): Promise<void>
   const attached = await getAttachedSession().catch(() => null);
   if (!attached || attached.sessionId !== state.sessionId) return;
 
-  const text = state.text.slice(0, 1000);
+  const text = `[claude-code] ${state.text.slice(0, 1000)}`;
   try {
     await registeredBot.api.sendMessage(registeredChatId, text);
     log({ chatId: registeredChatId, message: `notified response: ${state.projectName} (${text.slice(0, 60)})` });

@@ -30,9 +30,11 @@ export async function handleTurn(
 
   let reply: string;
 
+  const agentReply = (text: string) => `[agent] ${text}`;
+
   switch (intent) {
     case Intent.SUMMARY_REQUEST: {
-      reply = await summarizeSession();
+      reply = agentReply(await summarizeSession());
       break;
     }
 
@@ -45,7 +47,7 @@ export async function handleTurn(
           reply = `Multiple Claude sessions found. Please use /sessions to attach to the right one first.`;
         } else {
           // No tmux pane found — fall back to agent turn
-          reply = await runAgentTurn(chatId, userMessage);
+          reply = agentReply(await runAgentTurn(chatId, userMessage));
         }
       } else {
         reply = await runAgentTurn(chatId, userMessage);
@@ -61,7 +63,7 @@ export async function handleTurn(
         } else if (result.reason === "ambiguous") {
           reply = `Multiple Claude sessions found. Please use /sessions to attach to the right one first.`;
         } else {
-          reply = await runAgentTurn(chatId, userMessage);
+          reply = agentReply(await runAgentTurn(chatId, userMessage));
         }
       } else {
         reply = "No session attached. Use /sessions to pick one, or send a command.";
@@ -86,7 +88,7 @@ export async function handleTurn(
           reply = `Multiple Claude sessions found. Please use /sessions to attach to the right one first.`;
         } else {
           // No tmux pane found — fall back to Agent SDK
-          reply = await runAgentTurn(chatId, userMessage);
+          reply = agentReply(await runAgentTurn(chatId, userMessage));
         }
       } else {
         reply = await runAgentTurn(chatId, userMessage);
