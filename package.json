@@ -9,7 +9,6 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
     "@anthropic-ai/sdk": "latest",
-    "@modelcontextprotocol/sdk": "^1.26.0",
     "grammy": "latest",
     "openai": "latest"
   },

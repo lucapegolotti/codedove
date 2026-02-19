@@ -8,5 +8,4 @@ for (const key of required) {
 const bot = createBot(process.env.TELEGRAM_BOT_TOKEN!);
 bot.catch(console.error);
 
-await bot.start();
-console.log("claude-voice bot running");
+await bot.start({ onStart: () => console.log("claude-voice bot running") });
