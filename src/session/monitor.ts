@@ -20,6 +20,16 @@ export type SessionWaitingState = {
 
 export type WaitingCallback = (state: SessionWaitingState) => Promise<void>;
 
+export type SessionResponseState = {
+  sessionId: string;
+  projectName: string;
+  cwd: string;
+  filePath: string;
+  text: string;
+};
+
+export type ResponseCallback = (state: SessionResponseState) => Promise<void>;
+
 const YES_NO_PATTERNS = [/\(y\/n\)/i, /\[y\/N\]/i, /confirm\?/i];
 const ENTER_PATTERNS = [/press\s+enter/i, /hit\s+enter/i];
 
@@ -72,8 +82,10 @@ function sessionIdFromPath(filePath: string): { sessionId: string; projectDir: s
 
 const DEBOUNCE_MS = 3000;
 
-export function startMonitor(onWaiting: WaitingCallback): () => void {
+export function startMonitor(onWaiting: WaitingCallback, onResponse?: ResponseCallback): () => void {
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Track last text we notified per file to avoid duplicate notifications
+  const lastNotified = new Map<string, string>();
 
   const watcher = chokidar.watch(`${PROJECTS_PATH}/**/*.jsonl`, {
     persistent: true,
@@ -91,8 +103,9 @@ export function startMonitor(onWaiting: WaitingCallback): () => void {
       const lastText = await getLastAssistantText(filePath);
       if (!lastText) return;
 
-      const waitingType = classifyWaitingType(lastText);
-      if (!waitingType) return;
+      // Skip if we already notified about this exact text
+      if (lastNotified.get(filePath) === lastText) return;
+      lastNotified.set(filePath, lastText);
 
       const { sessionId, projectDir } = sessionIdFromPath(filePath);
       const projectName = decodeProjectName(projectDir);
@@ -116,11 +129,19 @@ export function startMonitor(onWaiting: WaitingCallback): () => void {
         // ignore
       }
 
-      log({ message: `session ${sessionId.slice(0, 8)} waiting (${waitingType}): ${lastText.slice(0, 80)}` });
+      const waitingType = classifyWaitingType(lastText);
 
-      await onWaiting({ sessionId, projectName, cwd, filePath, waitingType, prompt: lastText }).catch(
-        (err) => log({ message: `notification error: ${err instanceof Error ? err.message : String(err)}` })
-      );
+      if (waitingType) {
+        log({ message: `session ${sessionId.slice(0, 8)} waiting (${waitingType}): ${lastText.slice(0, 80)}` });
+        await onWaiting({ sessionId, projectName, cwd, filePath, waitingType, prompt: lastText }).catch(
+          (err) => log({ message: `notification error: ${err instanceof Error ? err.message : String(err)}` })
+        );
+      } else if (onResponse) {
+        log({ message: `session ${sessionId.slice(0, 8)} responded: ${lastText.slice(0, 80)}` });
+        await onResponse({ sessionId, projectName, cwd, filePath, text: lastText }).catch(
+          (err) => log({ message: `response notification error: ${err instanceof Error ? err.message : String(err)}` })
+        );
+      }
     }, DEBOUNCE_MS);
 
     timers.set(filePath, timer);

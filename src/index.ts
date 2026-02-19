@@ -1,6 +1,6 @@
 import { createBot } from "./telegram/bot.js";
 import { startMonitor } from "./session/monitor.js";
-import { notifyWaiting } from "./telegram/notifications.js";
+import { notifyWaiting, notifyResponse } from "./telegram/notifications.js";
 import { existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -22,7 +22,7 @@ const bot = createBot(process.env.TELEGRAM_BOT_TOKEN!);
 bot.catch(console.error);
 
 // Start session monitor — watches all Claude JSONL files for waiting state
-const stopMonitor = startMonitor(notifyWaiting);
+const stopMonitor = startMonitor(notifyWaiting, notifyResponse);
 
 // Graceful shutdown
 process.on("SIGINT", () => {

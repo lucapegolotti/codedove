@@ -1,5 +1,6 @@
 import { Bot, InlineKeyboard } from "grammy";
-import { WaitingType, type SessionWaitingState } from "../session/monitor.js";
+import { WaitingType, type SessionWaitingState, type SessionResponseState } from "../session/monitor.js";
+import { getAttachedSession } from "../session/history.js";
 import { log } from "../logger.js";
 
 let registeredBot: Bot | null = null;
@@ -36,6 +37,22 @@ export async function notifyWaiting(state: SessionWaitingState): Promise<void> {
     log({ chatId: registeredChatId, message: `notified: ${state.projectName} waiting (${state.waitingType})` });
   } catch (err) {
     log({ message: `failed to send waiting notification: ${err instanceof Error ? err.message : String(err)}` });
+  }
+}
+
+export async function notifyResponse(state: SessionResponseState): Promise<void> {
+  if (!registeredBot || !registeredChatId) return;
+
+  // Only notify for the attached session to avoid spam from other projects
+  const attached = await getAttachedSession().catch(() => null);
+  if (!attached || attached.sessionId !== state.sessionId) return;
+
+  const text = state.text.slice(0, 1000);
+  try {
+    await registeredBot.api.sendMessage(registeredChatId, text);
+    log({ chatId: registeredChatId, message: `notified response: ${state.projectName} (${text.slice(0, 60)})` });
+  } catch (err) {
+    log({ message: `failed to send response notification: ${err instanceof Error ? err.message : String(err)}` });
   }
 }
 
