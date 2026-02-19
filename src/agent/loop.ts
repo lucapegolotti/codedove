@@ -50,7 +50,13 @@ export async function handleTurn(
     }
 
     case Intent.GENERAL_CHAT: {
-      reply = "Got it! Send me a command or ask what Claude is up to.";
+      // If a session is attached, let Claude respond conversationally via Agent SDK.
+      // Only use the fallback when there's truly nothing to talk to.
+      if (cwd) {
+        reply = await runAgentTurn(chatId, userMessage);
+      } else {
+        reply = "No session attached. Use /sessions to pick one, or send a command.";
+      }
       break;
     }
 
