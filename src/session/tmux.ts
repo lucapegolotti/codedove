@@ -144,11 +144,10 @@ export async function launchClaudeInWindow(
   const cmd = skipPermissions
     ? "claude -C --dangerously-skip-permissions"
     : "claude -C";
-  await execAsync(`tmux send-keys -t '${paneId}' '${cmd}'`);
-  await new Promise((r) => setTimeout(r, 100));
-  await execAsync(`tmux send-keys -t '${paneId}' Enter`);
+  await sendKeysToPane(paneId, cmd);
 }
 
-export async function killWindow(paneId: string): Promise<void> {
-  await execAsync(`tmux kill-window -t '${paneId}'`);
+export async function killWindow(target: string): Promise<void> {
+  // tmux resolves a pane or window target to the containing window
+  await execAsync(`tmux kill-window -t '${target}'`);
 }
