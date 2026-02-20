@@ -11,6 +11,11 @@ import { clearAdapterSession } from "../session/adapter.js";
 import { watchForResponse, getFileSize } from "../session/monitor.js";
 import { respondToPermission } from "../session/permissions.js";
 import { writeFile, mkdir, unlink } from "fs/promises";
+import { execFile } from "child_process";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
+const SERVICE_LABEL = "com.claude-voice.bot";
 import { homedir } from "os";
 
 const pendingSessions = new Map<string, { sessionId: string; cwd: string; projectName: string }>();
@@ -369,6 +374,17 @@ export function createBot(token: string): Bot {
       await ctx.reply(`Attached to \`${session.projectName}\`. Send your first message.`, {
         parse_mode: "Markdown",
       });
+    }
+  });
+
+  bot.command("restart", async (ctx) => {
+    await ctx.reply("Restarting…");
+    const uid = process.getuid ? process.getuid() : 501;
+    try {
+      await execFileAsync("launchctl", ["kickstart", "-k", `gui/${uid}/${SERVICE_LABEL}`]);
+    } catch {
+      // kickstart kills and relaunches the service, so the bot process may die
+      // before the reply is sent — that's expected.
     }
   });
 
