@@ -210,6 +210,22 @@ export function watchForResponse(
   watcher.on("change", () => {
     if (done) return;
 
+    // Any file write (tool calls, results, etc.) means Claude is still active —
+    // reset the silence timer so it only fires when the file is truly quiet.
+    if (silenceTimer && !completionScheduled) {
+      clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(() => {
+        if (!done && !completionScheduled) {
+          completionScheduled = true;
+          done = true;
+          clearTimeout(timeoutId);
+          cleanup();
+          log({ message: `watchForResponse: session ${sessionId.slice(0, 8)} completed (silence)` });
+          onComplete?.();
+        }
+      }, silenceMs);
+    }
+
     readFile(filePath)
       .then((buf) => {
         if (done) return;
@@ -275,9 +291,9 @@ export function watchForResponse(
           await onResponse({ sessionId, projectName, cwd: capturedCwd, filePath, text: capturedText }).catch(
             (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
           );
-          // Silence timer: if no new text arrives within 10s, treat as turn complete
-          if (onComplete && !completionScheduled) {
-            if (silenceTimer) clearTimeout(silenceTimer);
+          // Start silence timer on first text block if not already running.
+          // Subsequent resets happen in the change handler above.
+          if (onComplete && !completionScheduled && !silenceTimer) {
             silenceTimer = setTimeout(() => {
               if (!done && !completionScheduled) {
                 completionScheduled = true;
