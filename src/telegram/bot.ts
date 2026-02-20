@@ -453,14 +453,34 @@ export function createBot(token: string): Bot {
         await ctx.answerCallbackQuery({ text: "Session not found — try /sessions again." });
         return;
       }
-      await mkdir(`${homedir()}/.claude-voice`, { recursive: true });
-      await writeFile(ATTACHED_SESSION_PATH, `${session.sessionId}\n${session.cwd}`, "utf8");
-      clearChatState(ctx.chat!.id);
-      clearAdapterSession(ctx.chat!.id);
-      await ctx.answerCallbackQuery({ text: "Attached!" });
-      await ctx.reply(`Attached to \`${session.projectName}\`. Send your first message.`, {
-        parse_mode: "Markdown",
-      });
+
+      // Check whether Claude Code is already running at this cwd
+      const pane = await findClaudePane(session.cwd).catch(() => ({ found: false as const, reason: "no_tmux" as const }));
+
+      if (pane.found) {
+        // Claude Code is running — attach immediately
+        await mkdir(`${homedir()}/.claude-voice`, { recursive: true });
+        await writeFile(ATTACHED_SESSION_PATH, `${session.sessionId}\n${session.cwd}`, "utf8");
+        clearChatState(ctx.chat!.id);
+        clearAdapterSession(ctx.chat!.id);
+        await ctx.answerCallbackQuery({ text: "Attached!" });
+        await ctx.reply(`Attached to \`${session.projectName}\`. Send your first message.`, {
+          parse_mode: "Markdown",
+        });
+      } else {
+        // No running pane — offer to launch
+        await ctx.answerCallbackQuery();
+        const keyboard = new InlineKeyboard()
+          .text("Launch", `launch:${sessionId}`)
+          .text("Launch (skip permissions)", `launch:skip:${sessionId}`)
+          .row()
+          .text("Cancel", `launch:cancel:${sessionId}`);
+        await ctx.reply(
+          `No Claude Code running at \`${session.projectName}\`. Launch one?`,
+          { parse_mode: "Markdown", reply_markup: keyboard }
+        );
+      }
+      return;
     }
   });
 
