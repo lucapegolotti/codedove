@@ -125,7 +125,7 @@ describe("handleTurn", () => {
     vi.mocked(injectInput).mockResolvedValue({ found: false, reason: "ambiguous" });
 
     const result = await handleTurn(123, "run tests", undefined, "/Users/luca/repos/app");
-    expect(result).toMatch(/multiple/i);
+    expect(result).toMatch(/no claude code running/i);
   });
 });
 
