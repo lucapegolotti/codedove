@@ -177,6 +177,7 @@ export function watchForResponse(
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let done = false;
   let lastSentText: string | null = null;
+  let completionScheduled = false;
 
   const watcher = chokidar.watch(filePath, {
     persistent: true,
@@ -230,6 +231,26 @@ export function watchForResponse(
           } catch {
             continue;
           }
+        }
+
+        // Detect Claude Code turn completion via the result event
+        const isComplete = lines.some((line) => {
+          try {
+            return JSON.parse(line).type === "result";
+          } catch {
+            return false;
+          }
+        });
+
+        if (isComplete && !completionScheduled) {
+          completionScheduled = true;
+          clearTimeout(timeoutId);
+          // Let any pending debounce fire first, then shut down
+          setTimeout(() => {
+            done = true;
+            cleanup();
+            log({ message: `watchForResponse: session ${sessionId.slice(0, 8)} completed (result event)` });
+          }, debounceMs + 200);
         }
 
         // No new text, or same text already sent — don't restart debounce
