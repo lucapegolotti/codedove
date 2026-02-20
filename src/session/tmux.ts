@@ -124,3 +124,31 @@ export async function injectInput(targetCwd: string, input: string): Promise<Tmu
   }
   return result;
 }
+
+// Sanitize a string for use as a tmux window name (no dots, colons, or spaces)
+function sanitizeWindowName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 30);
+}
+
+export async function launchClaudeInWindow(
+  cwd: string,
+  projectName: string,
+  skipPermissions: boolean
+): Promise<void> {
+  const winName = sanitizeWindowName(projectName);
+  // Create a new window and capture its pane ID
+  const { stdout } = await execAsync(
+    `tmux new-window -c '${cwd.replace(/'/g, "'\\''")}' -n '${winName}' -P -F '#{pane_id}'`
+  );
+  const paneId = stdout.trim();
+  const cmd = skipPermissions
+    ? "claude -C --dangerously-skip-permissions"
+    : "claude -C";
+  await execAsync(`tmux send-keys -t '${paneId}' '${cmd}'`);
+  await new Promise((r) => setTimeout(r, 100));
+  await execAsync(`tmux send-keys -t '${paneId}' Enter`);
+}
+
+export async function killWindow(paneId: string): Promise<void> {
+  await execAsync(`tmux kill-window -t '${paneId}'`);
+}

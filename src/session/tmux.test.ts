@@ -57,3 +57,11 @@ describe("findBestPane", () => {
     expect(result).toHaveLength(0);
   });
 });
+
+describe("launchClaudeInWindow and killWindow", () => {
+  it("are exported from tmux.ts", async () => {
+    const mod = await import("./tmux.js");
+    expect(typeof mod.launchClaudeInWindow).toBe("function");
+    expect(typeof mod.killWindow).toBe("function");
+  });
+});
