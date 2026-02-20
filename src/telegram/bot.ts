@@ -438,6 +438,11 @@ export function createBot(token: string): Bot {
         }
       }
       await ctx.answerCallbackQuery({ text: action === "deny" ? "Denied ❌" : "Approved ✅" });
+      // Remove the buttons and append the decision so the message shows the
+      // outcome and can't be re-clicked.
+      const originalText = ctx.callbackQuery.message?.text ?? "";
+      const decision = action === "approve" ? "\n\n✅ Approved" : "\n\n❌ Denied";
+      await ctx.editMessageText(originalText + decision).catch(() => {});
       return;
     }
 
