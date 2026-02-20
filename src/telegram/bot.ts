@@ -172,6 +172,10 @@ export function createBot(token: string): Bot {
   const bot = new Bot(token);
 
   bot.on("message:text", async (ctx) => {
+    // Skip bot commands — they are handled by their own bot.command() handlers.
+    // grammY fires both handlers for a command message, so we must guard here.
+    if (ctx.message.text.startsWith("/")) return;
+
     const chatId = ctx.chat.id;
     const userText = ctx.message.text;
     await ctx.replyWithChatAction("typing");
@@ -378,14 +382,11 @@ export function createBot(token: string): Bot {
   });
 
   bot.command("restart", async (ctx) => {
-    await ctx.reply("Restarting…");
     const uid = process.getuid ? process.getuid() : 501;
-    try {
-      await execFileAsync("launchctl", ["kickstart", "-k", `gui/${uid}/${SERVICE_LABEL}`]);
-    } catch {
-      // kickstart kills and relaunches the service, so the bot process may die
-      // before the reply is sent — that's expected.
-    }
+    // Send the reply and give Telegram a moment to deliver it before the process is killed.
+    await ctx.reply("Restarting…").catch(() => {});
+    await new Promise((r) => setTimeout(r, 500));
+    execFile("launchctl", ["kickstart", "-k", `gui/${uid}/${SERVICE_LABEL}`]);
   });
 
   return bot;
