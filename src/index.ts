@@ -1,4 +1,5 @@
 import { createBot } from "./telegram/bot.js";
+import { loadConfig } from "./config/config.js";
 import { startMonitor } from "./session/monitor.js";
 import { watchPermissionRequests } from "./session/permissions.js";
 import { notifyWaiting, sendStartupMessage, notifyPermission } from "./telegram/notifications.js";
@@ -22,7 +23,8 @@ for (const key of required) {
 }
 
 const token = process.env.TELEGRAM_BOT_TOKEN!;
-const bot = createBot(token);
+const config = await loadConfig();
+const bot = createBot(token, config.allowedChatId);
 bot.catch(console.error);
 
 // Write the token so compact hook scripts can use curl to call the Telegram API

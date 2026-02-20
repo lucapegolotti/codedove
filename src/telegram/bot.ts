@@ -1,4 +1,5 @@
 import { Bot, Context, InputFile, InlineKeyboard } from "grammy";
+import { applyAllowlistMiddleware } from "./middleware.js";
 import { splitMessage, sendMarkdownReply } from "./utils.js";
 import { handleTurn, clearChatState } from "../agent/loop.js";
 import { summarizeSession } from "../agent/summarizer.js";
@@ -244,8 +245,9 @@ async function processTextTurn(ctx: Context, chatId: number, text: string): Prom
   await sendMarkdownReply(ctx, reply);
 }
 
-export function createBot(token: string): Bot {
+export function createBot(token: string, allowedChatId?: number): Bot {
   const bot = new Bot(token);
+  applyAllowlistMiddleware(bot, allowedChatId);
 
   bot.on("message:text", async (ctx, next) => {
     // Pass slash commands through to their bot.command() handlers.
