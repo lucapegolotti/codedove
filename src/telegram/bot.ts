@@ -6,7 +6,7 @@ import type { SessionResponseState } from "../session/monitor.js";
 import { log } from "../logger.js";
 import { listSessions, ATTACHED_SESSION_PATH, getAttachedSession, getLatestSessionFileForCwd } from "../session/history.js";
 import { registerForNotifications, resolveWaitingAction, notifyResponse, sendPing } from "./notifications.js";
-import { injectInput } from "../session/tmux.js";
+import { injectInput, findClaudePane, sendKeysToPane, sendRawKeyToPane } from "../session/tmux.js";
 import { clearAdapterSession } from "../session/adapter.js";
 import { watchForResponse, getFileSize } from "../session/monitor.js";
 import { respondToPermission } from "../session/permissions.js";
@@ -337,6 +337,19 @@ export function createBot(token: string): Bot {
       await respondToPermission(requestId, action === "deny" ? "deny" : "approve").catch((err) => {
         log({ message: `respondToPermission error: ${err instanceof Error ? err.message : String(err)}` });
       });
+      // Also send the matching key to the Claude Code tmux pane so the terminal
+      // permission dialog is dismissed even if the user is looking at the terminal.
+      const attachedForPerm = await getAttachedSession().catch(() => null);
+      if (attachedForPerm) {
+        const pane = await findClaudePane(attachedForPerm.cwd).catch(() => ({ found: false as const, reason: "no_tmux" as const }));
+        if (pane.found) {
+          if (action === "approve") {
+            await sendKeysToPane(pane.paneId, "1").catch(() => {});
+          } else {
+            await sendRawKeyToPane(pane.paneId, "Escape").catch(() => {});
+          }
+        }
+      }
       await ctx.answerCallbackQuery({ text: action === "deny" ? "Denied ❌" : "Approved ✅" });
       return;
     }

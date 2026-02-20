@@ -110,7 +110,8 @@ export async function notifyResponse(state: SessionResponseState): Promise<void>
 export async function notifyPermission(req: PermissionRequest): Promise<void> {
   if (!registeredBot || !registeredChatId) return;
 
-  const text = `🔐 *${req.toolInput}*`;
+  const commandLine = req.toolCommand ? `\n\`\`\`\n${req.toolCommand}\n\`\`\`` : "";
+  const text = `🔐 *${req.toolInput}*${commandLine}`;
   const keyboard = new InlineKeyboard()
     .text("Yes", `perm:approve:${req.requestId}`)
     .text("No", `perm:deny:${req.requestId}`);

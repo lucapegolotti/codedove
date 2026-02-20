@@ -50,6 +50,8 @@ d = json.load(sys.stdin)
 print(d.get('message', json.dumps(d)))
 " 2>/dev/null || echo "$INPUT")
 
+TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('transcript_path',''))" 2>/dev/null || echo "")
+
 REQUEST_ID=$(python3 -c "import uuid; print(str(uuid.uuid4()))")
 REQUEST_FILE="$CLAUDE_VOICE_DIR/permission-request-\${REQUEST_ID}.json"
 RESPONSE_FILE="$CLAUDE_VOICE_DIR/permission-response-\${REQUEST_ID}"
@@ -60,9 +62,10 @@ data = {
     'requestId': sys.argv[1],
     'toolName': sys.argv[2],
     'toolInput': sys.argv[3],
+    'transcriptPath': sys.argv[4],
 }
 print(json.dumps(data))
-" "$REQUEST_ID" "$TOOL_NAME" "$TOOL_INPUT" > "$REQUEST_FILE"
+" "$REQUEST_ID" "$TOOL_NAME" "$TOOL_INPUT" "$TRANSCRIPT_PATH" > "$REQUEST_FILE"
 
 TIMEOUT=300
 ELAPSED=0

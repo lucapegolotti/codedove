@@ -10,8 +10,41 @@ export type PermissionRequest = {
   requestId: string;
   toolName: string;
   toolInput: string;
+  toolCommand?: string; // actual command extracted from JSONL (e.g. the bash command)
   filePath: string;
 };
+
+// Read the JSONL transcript and extract the last tool_use input as a short string.
+async function extractToolCommand(transcriptPath: string): Promise<string | undefined> {
+  try {
+    const content = await readFile(transcriptPath, "utf8");
+    const lines = content.trim().split("\n").filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const obj = JSON.parse(lines[i]);
+        if (obj.type !== "assistant") continue;
+        const blocks: unknown[] = obj.message?.content ?? [];
+        for (let j = blocks.length - 1; j >= 0; j--) {
+          const block = blocks[j] as Record<string, unknown>;
+          if (block.type !== "tool_use") continue;
+          const input = block.input;
+          if (typeof input === "string") return input.slice(0, 300);
+          if (input && typeof input === "object") {
+            // For Bash: show "command", for others show JSON
+            const cmd = (input as Record<string, unknown>).command;
+            if (typeof cmd === "string") return cmd.slice(0, 300);
+            return JSON.stringify(input).slice(0, 300);
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    // transcript not readable
+  }
+  return undefined;
+}
 
 export function watchPermissionRequests(
   onRequest: (req: PermissionRequest) => Promise<void>
@@ -28,12 +61,16 @@ export function watchPermissionRequests(
     if (!filename.startsWith("permission-request-") || !filename.endsWith(".json")) return;
 
     readFile(filePath, "utf8")
-      .then((raw) => {
+      .then(async (raw) => {
         const data = JSON.parse(raw);
+        const toolCommand = data.transcriptPath
+          ? await extractToolCommand(data.transcriptPath)
+          : undefined;
         const req: PermissionRequest = {
           requestId: data.requestId,
           toolName: data.toolName,
           toolInput: data.toolInput,
+          toolCommand,
           filePath,
         };
         log({ message: `permission request: ${req.toolName} (${req.requestId.slice(0, 8)})` });

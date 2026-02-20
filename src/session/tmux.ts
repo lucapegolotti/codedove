@@ -112,6 +112,11 @@ export async function sendKeysToPane(paneId: string, input: string): Promise<voi
   await execAsync(`tmux send-keys -t '${paneId}' Enter`);
 }
 
+// Send a named tmux key (e.g. "Escape", "q") without appending Enter.
+export async function sendRawKeyToPane(paneId: string, key: string): Promise<void> {
+  await execAsync(`tmux send-keys -t '${paneId}' '${key}'`);
+}
+
 export async function injectInput(targetCwd: string, input: string): Promise<TmuxResult> {
   const result = await findClaudePane(targetCwd);
   if (result.found) {
