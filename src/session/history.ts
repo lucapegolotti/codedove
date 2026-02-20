@@ -177,7 +177,20 @@ export async function getSessionFilePath(sessionId: string): Promise<string | nu
   return null;
 }
 
+// Returns true if the JSONL file contains at least one assistant message.
+// Files that only contain file-history-snapshot entries are not real session files.
+async function hasAssistantMessages(filePath: string): Promise<boolean> {
+  try {
+    const content = await readFile(filePath, "utf8");
+    return content.includes('"type":"assistant"');
+  } catch {
+    return false;
+  }
+}
+
 // Returns the most recently modified session JSONL for the given working directory.
+// Prefers files that contain actual conversation data (assistant messages) over
+// metadata-only files (e.g. file-history-snapshot entries created at startup).
 // Used when the attached session ID may be stale (e.g. Claude Code restarted and
 // created a new session UUID while the bot was still watching the old one).
 export async function getLatestSessionFileForCwd(
@@ -195,23 +208,34 @@ export async function getLatestSessionFileForCwd(
     return null;
   }
 
-  let bestFile: string | null = null;
-  let bestMtime = new Date(0);
+  // Collect files with their mtimes
+  const entries: { file: string; mtime: Date }[] = [];
   for (const file of files) {
     try {
       const m = (await stat(`${projectDir}/${file}`)).mtime;
-      if (m > bestMtime) {
-        bestMtime = m;
-        bestFile = file;
-      }
+      entries.push({ file, mtime: m });
     } catch {
       continue;
     }
   }
-  if (!bestFile) return null;
+  if (entries.length === 0) return null;
 
+  // Sort by mtime descending
+  entries.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+
+  // Prefer the most recently modified file that has actual conversation content.
+  // Fall back to the most recently modified file if none have assistant messages.
+  for (const entry of entries) {
+    const filePath = `${projectDir}/${entry.file}`;
+    if (await hasAssistantMessages(filePath)) {
+      return { filePath, sessionId: entry.file.replace(".jsonl", "") };
+    }
+  }
+
+  // No conversation files found — return most recent (new session not yet responded to)
+  const best = entries[0];
   return {
-    filePath: `${projectDir}/${bestFile}`,
-    sessionId: bestFile.replace(".jsonl", ""),
+    filePath: `${projectDir}/${best.file}`,
+    sessionId: best.file.replace(".jsonl", ""),
   };
 }

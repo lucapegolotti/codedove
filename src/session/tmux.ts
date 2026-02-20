@@ -152,8 +152,8 @@ export async function launchClaudeInWindow(
   );
   const paneId = stdout.trim();
   const cmd = skipPermissions
-    ? "claude -C --dangerously-skip-permissions"
-    : "claude -C";
+    ? "claude -c --dangerously-skip-permissions"
+    : "claude -c";
   await sendKeysToPane(paneId, cmd);
   return paneId;
 }
