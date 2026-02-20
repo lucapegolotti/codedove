@@ -105,6 +105,7 @@ async function ensureSession(
 
 let activeWatcherStop: (() => void) | null = null;
 let activeWatcherOnComplete: (() => void) | null = null;
+let compactPollGeneration = 0;
 
 // Snapshot the active session file and its current byte offset before injection.
 // Pass this to startInjectionWatcher so the baseline is set before Claude responds,
@@ -135,6 +136,10 @@ async function startInjectionWatcher(
     activeWatcherOnComplete = null;
   }
 
+  // Increment generation so any in-flight compaction polls from a previous
+  // injection know to abort.
+  const myGeneration = ++compactPollGeneration;
+
   let filePath: string;
   let latestSessionId: string;
   let baseline: number;
@@ -161,19 +166,76 @@ async function startInjectionWatcher(
     log({ message: `watchForResponse: session rotated ${attached.sessionId.slice(0, 8)} → ${latestSessionId.slice(0, 8)}, updating attached` });
     await writeFile(ATTACHED_SESSION_PATH, `${latestSessionId}\n${attached.cwd}`, "utf8").catch(() => {});
   }
+
+  // Track whether any response text was delivered during this watch session.
+  // If onComplete fires with no response delivered, a compaction may have ended
+  // the turn before Claude responded — poll for the new post-compact session file.
+  let responseDelivered = false;
+  const wrappedOnResponse = async (state: SessionResponseState) => {
+    responseDelivered = true;
+    await (onResponse ?? notifyResponse)(state);
+  };
+
   log({ message: `watchForResponse started for ${latestSessionId.slice(0, 8)}, baseline=${baseline}` });
   activeWatcherOnComplete = onComplete ?? null;
+  const watchedFilePath = filePath;
+  const watchedCwd = attached.cwd;
   activeWatcherStop = watchForResponse(
     filePath,
     baseline,
-    async (state) => { await (onResponse ?? notifyResponse)(state); },
+    wrappedOnResponse,
     3_600_000,
     () => sendPing("⏳ Still working..."),
     () => {
       activeWatcherOnComplete = null;
-      onComplete?.();
+      if (!responseDelivered) {
+        // No text was delivered before the result event — likely a compaction stop.
+        // Poll for the new session file that Claude Code creates after restarting.
+        log({ message: `watcher completed with no response for ${watchedCwd}, checking for post-compact session...` });
+        void pollForPostCompactionSession(myGeneration, watchedCwd, watchedFilePath, onResponse, onComplete);
+      } else {
+        onComplete?.();
+      }
     }
   );
+}
+
+// After a compaction, Claude Code restarts with a new JSONL file. Poll until we
+// find a different session file for the same cwd, then restart watching on it.
+async function pollForPostCompactionSession(
+  generation: number,
+  cwd: string,
+  oldFilePath: string,
+  onResponse?: (state: SessionResponseState) => Promise<void>,
+  onComplete?: () => void
+): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    await new Promise<void>((r) => setTimeout(r, 3_000));
+    // Abort if a new message injection started a fresh watcher generation.
+    if (compactPollGeneration !== generation) return;
+
+    const latest = await getLatestSessionFileForCwd(cwd);
+    if (latest && latest.filePath !== oldFilePath) {
+      log({ message: `post-compact: new session found ${latest.sessionId.slice(0, 8)}, restarting watcher` });
+      await writeFile(ATTACHED_SESSION_PATH, `${latest.sessionId}\n${cwd}`, "utf8").catch(() => {});
+      activeWatcherOnComplete = onComplete ?? null;
+      activeWatcherStop = watchForResponse(
+        latest.filePath,
+        0,
+        async (state) => { await (onResponse ?? notifyResponse)(state); },
+        3_600_000,
+        () => sendPing("⏳ Still working..."),
+        () => {
+          activeWatcherOnComplete = null;
+          onComplete?.();
+        }
+      );
+      return;
+    }
+  }
+  log({ message: `post-compact: no new session found for ${cwd} after 60s` });
+  onComplete?.();
 }
 
 async function processTextTurn(ctx: Context, chatId: number, text: string): Promise<void> {
