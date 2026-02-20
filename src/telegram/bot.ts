@@ -416,18 +416,27 @@ export function createBot(token: string): Bot {
   });
 
   bot.command("detach", async (ctx) => {
-    try {
-      await unlink(ATTACHED_SESSION_PATH);
-    } catch {
-      // file did not exist
-    }
+    const attached = await getAttachedSession().catch(() => null);
+    const pane = attached
+      ? await findClaudePane(attached.cwd).catch(() => ({ found: false as const, reason: "no_tmux" as const }))
+      : null;
+
+    // Always detach immediately
+    try { await unlink(ATTACHED_SESSION_PATH); } catch { /* already gone */ }
     launchedPaneId = undefined;
     clearChatState(ctx.chat.id);
     if (activeWatcherStop) {
       activeWatcherStop();
       activeWatcherStop = null;
     }
-    await ctx.reply("Detached.");
+
+    if (pane?.found) {
+      const keyboard = new InlineKeyboard()
+        .text("Close tmux window", `detach:close:${pane.paneId}`)
+        .text("Keep open", "detach:keep");
+      await ctx.reply("Detached. Close the tmux Claude Code window too?", { reply_markup: keyboard });
+    } else {
+      await ctx.reply("Detached.");
   });
 
   bot.command("close_session", async (ctx) => {
@@ -614,6 +623,23 @@ export function createBot(token: string): Bot {
         { parse_mode: "Markdown" }
       );
       return;
+    }
+
+    if (data.startsWith("detach:")) {
+      if (data === "detach:keep") {
+        await ctx.answerCallbackQuery({ text: "Kept open." });
+        await ctx.editMessageReplyMarkup();
+        return;
+      }
+      if (data.startsWith("detach:close:")) {
+        const paneId = data.slice("detach:close:".length);
+        await killWindow(paneId).catch((err) => {
+          log({ message: `killWindow error: ${err instanceof Error ? err.message : String(err)}` });
+        });
+        await ctx.answerCallbackQuery({ text: "Closed." });
+        await ctx.editMessageText("Detached. tmux window closed.");
+        return;
+      }
     }
   });
 
