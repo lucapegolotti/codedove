@@ -363,6 +363,33 @@ export function createBot(token: string): Bot {
     await ctx.reply("Detached.");
   });
 
+  bot.command("close_session", async (ctx) => {
+    const attached = await getAttachedSession().catch(() => null);
+    if (!attached) {
+      await ctx.reply("No session attached.");
+      return;
+    }
+
+    const pane = await findClaudePane(attached.cwd).catch(() => ({ found: false as const, reason: "no_tmux" as const }));
+
+    try { await unlink(ATTACHED_SESSION_PATH); } catch { /* already gone */ }
+    clearChatState(ctx.chat.id);
+    clearAdapterSession(ctx.chat.id);
+    if (activeWatcherStop) {
+      activeWatcherStop();
+      activeWatcherStop = null;
+    }
+
+    if (pane.found) {
+      await killWindow(pane.paneId).catch((err) => {
+        log({ message: `killWindow error: ${err instanceof Error ? err.message : String(err)}` });
+      });
+      await ctx.reply("Session closed.");
+    } else {
+      await ctx.reply("No running session found — detached.");
+    }
+  });
+
   bot.command("status", async (ctx) => {
     const attached = await getAttachedSession();
     if (!attached) {
