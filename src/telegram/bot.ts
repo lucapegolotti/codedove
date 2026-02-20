@@ -166,10 +166,10 @@ async function processTextTurn(ctx: Context, chatId: number, text: string): Prom
 export function createBot(token: string): Bot {
   const bot = new Bot(token);
 
-  bot.on("message:text", async (ctx) => {
-    // Skip bot commands — they are handled by their own bot.command() handlers.
-    // grammY fires both handlers for a command message, so we must guard here.
-    if (ctx.message.text.startsWith("/")) return;
+  bot.on("message:text", async (ctx, next) => {
+    // Pass slash commands through to their bot.command() handlers.
+    // Without this, returning here would stop the grammY middleware chain.
+    if (ctx.message.text.startsWith("/")) return next();
 
     const chatId = ctx.chat.id;
     const userText = ctx.message.text;
