@@ -8,14 +8,15 @@ export async function handleTurn(
   chatId: number,
   userMessage: string,
   _lastBotMessage?: string,
-  knownCwd?: string
+  knownCwd?: string,
+  fallbackPaneId?: string
 ): Promise<string> {
   if (!knownCwd) {
     return "No session attached. Use /sessions to pick one.";
   }
 
   log({ chatId, message: `inject: ${userMessage.slice(0, 80)}` });
-  const result = await injectInput(knownCwd, userMessage);
+  const result = await injectInput(knownCwd, userMessage, fallbackPaneId);
   if (result.found) {
     return "__INJECTED__";
   }

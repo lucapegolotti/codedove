@@ -117,10 +117,20 @@ export async function sendRawKeyToPane(paneId: string, key: string): Promise<voi
   await execAsync(`tmux send-keys -t '${paneId}' '${key}'`);
 }
 
-export async function injectInput(targetCwd: string, input: string): Promise<TmuxResult> {
+export async function injectInput(
+  targetCwd: string,
+  input: string,
+  fallbackPaneId?: string
+): Promise<TmuxResult> {
   const result = await findClaudePane(targetCwd);
   if (result.found) {
     await sendKeysToPane(result.paneId, input);
+    return result;
+  }
+  // Claude Code may still be starting up — use the known launched pane if provided
+  if (fallbackPaneId) {
+    await sendKeysToPane(fallbackPaneId, input);
+    return { found: true, paneId: fallbackPaneId };
   }
   return result;
 }
@@ -134,7 +144,7 @@ export async function launchClaudeInWindow(
   cwd: string,
   projectName: string,
   skipPermissions: boolean
-): Promise<void> {
+): Promise<string> {
   const winName = sanitizeWindowName(projectName);
   // Create a new window and capture its pane ID
   const { stdout } = await execAsync(
@@ -145,6 +155,7 @@ export async function launchClaudeInWindow(
     ? "claude -C --dangerously-skip-permissions"
     : "claude -C";
   await sendKeysToPane(paneId, cmd);
+  return paneId;
 }
 
 export async function killWindow(target: string): Promise<void> {

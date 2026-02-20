@@ -15,6 +15,9 @@ import { homedir } from "os";
 import { join } from "path";
 
 const pendingSessions = new Map<string, { sessionId: string; cwd: string; projectName: string }>();
+// Pane ID of a recently launched (but not yet fully started) Claude Code window.
+// Used as a fallback for injection while Claude Code is still initializing.
+let launchedPaneId: string | undefined;
 
 const POLISH_VOICE_OFF_PATH = join(homedir(), ".claude-voice", "polish-voice-off");
 
@@ -150,7 +153,7 @@ async function startInjectionWatcher(
 
 async function processTextTurn(ctx: Context, chatId: number, text: string): Promise<void> {
   const attached = await ensureSession(ctx, chatId);
-  const reply = await handleTurn(chatId, text, undefined, attached?.cwd);
+  const reply = await handleTurn(chatId, text, undefined, attached?.cwd, launchedPaneId);
 
   if (reply === "__SESSION_PICKER__") {
     await sendSessionPicker(ctx);
@@ -216,7 +219,7 @@ export function createBot(token: string): Bot {
 
       const attached = await ensureSession(ctx, chatId);
       const injected = transcript ? `${polished}\n\n[transcribed from voice, may contain inaccuracies]` : polished;
-      const reply = await handleTurn(chatId, injected, undefined, attached?.cwd);
+      const reply = await handleTurn(chatId, injected, undefined, attached?.cwd, launchedPaneId);
 
       if (reply === "__SESSION_PICKER__") {
         await sendSessionPicker(ctx);
@@ -389,6 +392,7 @@ export function createBot(token: string): Bot {
     } catch {
       // file did not exist
     }
+    launchedPaneId = undefined;
     clearChatState(ctx.chat.id);
     if (activeWatcherStop) {
       activeWatcherStop();
@@ -519,6 +523,7 @@ export function createBot(token: string): Bot {
         // Claude Code is running — attach immediately
         await mkdir(`${homedir()}/.claude-voice`, { recursive: true });
         await writeFile(ATTACHED_SESSION_PATH, `${session.sessionId}\n${session.cwd}`, "utf8");
+        launchedPaneId = undefined; // clear any stale launched pane
         clearChatState(ctx.chat!.id);
         await ctx.answerCallbackQuery({ text: "Attached!" });
         await ctx.reply(`Attached to \`${session.projectName}\`. Send your first message.`, {
@@ -558,8 +563,9 @@ export function createBot(token: string): Bot {
         return;
       }
 
+      let paneId: string;
       try {
-        await launchClaudeInWindow(session.cwd, session.projectName, skipPermissions);
+        paneId = await launchClaudeInWindow(session.cwd, session.projectName, skipPermissions);
       } catch (err) {
         await ctx.answerCallbackQuery({ text: "Failed to launch tmux window." });
         log({ message: `launchClaudeInWindow error: ${err instanceof Error ? err.message : String(err)}` });
@@ -569,6 +575,7 @@ export function createBot(token: string): Bot {
       // Attach to this project's cwd — sessionId will be discovered lazily by the watcher
       await mkdir(`${homedir()}/.claude-voice`, { recursive: true });
       await writeFile(ATTACHED_SESSION_PATH, `${session.sessionId}\n${session.cwd}`, "utf8");
+      launchedPaneId = paneId; // fallback for injection while Claude Code initializes
       clearChatState(ctx.chat!.id);
 
       await ctx.answerCallbackQuery({ text: "Launched!" });
