@@ -1,5 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { classifyWaitingType, WaitingType } from "./monitor.js";
+import { describe, it, expect, afterEach } from "vitest";
+import { writeFile, appendFile, unlink } from "fs/promises";
+import { join } from "path";
+import { tmpdir } from "os";
+import { classifyWaitingType, WaitingType, getFileSize, watchForResponse } from "./monitor.js";
+import type { SessionResponseState } from "./monitor.js";
 
 describe("classifyWaitingType", () => {
   it("detects y/n prompt", () => {
@@ -28,5 +32,169 @@ describe("classifyWaitingType", () => {
 
   it("detects confirm prompt", () => {
     expect(classifyWaitingType("Are you sure you want to proceed? Confirm?")).toBe(WaitingType.YES_NO);
+  });
+});
+
+function assistantLine(text: string, cwd = "/tmp/project"): string {
+  return (
+    JSON.stringify({
+      type: "assistant",
+      cwd,
+      message: { content: [{ type: "text", text }] },
+    }) + "\n"
+  );
+}
+
+describe("getFileSize", () => {
+  const tmpFile = join(tmpdir(), `cv-getfilesize-${Date.now()}.jsonl`);
+
+  afterEach(async () => {
+    await unlink(tmpFile).catch(() => {});
+  });
+
+  it("returns byte count of file contents", async () => {
+    await writeFile(tmpFile, "hello");
+    expect(await getFileSize(tmpFile)).toBe(5);
+  });
+
+  it("returns 0 for a non-existent file", async () => {
+    expect(await getFileSize("/tmp/definitely-does-not-exist-cv.jsonl")).toBe(0);
+  });
+});
+
+describe("watchForResponse", () => {
+  let tmpFile: string;
+  let stopWatcher: (() => void) | null = null;
+
+  afterEach(async () => {
+    stopWatcher?.();
+    stopWatcher = null;
+    if (tmpFile) await unlink(tmpFile).catch(() => {});
+  });
+
+  it("fires callback when new assistant text appears after baseline", async () => {
+    tmpFile = join(tmpdir(), `cv-watch-${Date.now()}.jsonl`);
+    await writeFile(tmpFile, "");
+    const baseline = await getFileSize(tmpFile);
+
+    const received: SessionResponseState[] = [];
+    stopWatcher = watchForResponse(
+      tmpFile,
+      baseline,
+      async (state) => {
+        received.push(state);
+      },
+      10_000,
+      undefined,
+      50
+    );
+
+    await new Promise((r) => setTimeout(r, 200));
+    await appendFile(tmpFile, assistantLine("Build succeeded."));
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(received).toHaveLength(1);
+    expect(received[0].text).toBe("Build succeeded.");
+  });
+
+  it("ignores content written before the baseline", async () => {
+    tmpFile = join(tmpdir(), `cv-watch-${Date.now()}.jsonl`);
+    await writeFile(tmpFile, assistantLine("Old message from before injection."));
+    const baseline = await getFileSize(tmpFile);
+
+    const received: SessionResponseState[] = [];
+    stopWatcher = watchForResponse(
+      tmpFile,
+      baseline,
+      async (state) => {
+        received.push(state);
+      },
+      10_000,
+      undefined,
+      50
+    );
+
+    await new Promise((r) => setTimeout(r, 500));
+    expect(received).toHaveLength(0);
+  });
+
+  it("does not fire twice for the same text block", async () => {
+    tmpFile = join(tmpdir(), `cv-watch-${Date.now()}.jsonl`);
+    await writeFile(tmpFile, "");
+    const baseline = await getFileSize(tmpFile);
+
+    const received: SessionResponseState[] = [];
+    stopWatcher = watchForResponse(
+      tmpFile,
+      baseline,
+      async (state) => {
+        received.push(state);
+      },
+      10_000,
+      undefined,
+      50
+    );
+
+    await new Promise((r) => setTimeout(r, 200));
+    await appendFile(tmpFile, assistantLine("Done."));
+    await new Promise((r) => setTimeout(r, 50));
+    await appendFile(tmpFile, assistantLine("Done.")); // duplicate
+
+    await new Promise((r) => setTimeout(r, 300));
+    expect(received).toHaveLength(1);
+  });
+
+  it("fires separately for two distinct text blocks", async () => {
+    tmpFile = join(tmpdir(), `cv-watch-${Date.now()}.jsonl`);
+    await writeFile(tmpFile, "");
+    const baseline = await getFileSize(tmpFile);
+
+    const received: SessionResponseState[] = [];
+    stopWatcher = watchForResponse(
+      tmpFile,
+      baseline,
+      async (state) => {
+        received.push(state);
+      },
+      10_000,
+      undefined,
+      50
+    );
+
+    await new Promise((r) => setTimeout(r, 200));
+    await appendFile(tmpFile, assistantLine("First block."));
+    await new Promise((r) => setTimeout(r, 300));
+    await appendFile(tmpFile, assistantLine("Second block."));
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(received).toHaveLength(2);
+    expect(received[0].text).toBe("First block.");
+    expect(received[1].text).toBe("Second block.");
+  });
+
+  it("stop function prevents further callbacks", async () => {
+    tmpFile = join(tmpdir(), `cv-watch-${Date.now()}.jsonl`);
+    await writeFile(tmpFile, "");
+    const baseline = await getFileSize(tmpFile);
+
+    const received: SessionResponseState[] = [];
+    stopWatcher = watchForResponse(
+      tmpFile,
+      baseline,
+      async (state) => {
+        received.push(state);
+      },
+      10_000,
+      undefined,
+      50
+    );
+
+    await new Promise((r) => setTimeout(r, 200));
+    stopWatcher();
+    stopWatcher = null;
+
+    await appendFile(tmpFile, assistantLine("Should not arrive."));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(received).toHaveLength(0);
   });
 });
