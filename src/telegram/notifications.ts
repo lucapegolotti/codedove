@@ -110,11 +110,10 @@ export async function notifyResponse(state: SessionResponseState): Promise<void>
 export async function notifyPermission(req: PermissionRequest): Promise<void> {
   if (!registeredBot || !registeredChatId) return;
 
-  const toolInputPreview = req.toolInput.slice(0, 300);
-  const text = `🔐 *Permission required*\n\`${req.toolName}\`\n\n\`${toolInputPreview}\``;
+  const text = `🔐 *${req.toolInput}*`;
   const keyboard = new InlineKeyboard()
-    .text("✅ Approve", `perm:approve:${req.requestId}`)
-    .text("❌ Deny", `perm:deny:${req.requestId}`);
+    .text("Yes", `perm:approve:${req.requestId}`)
+    .text("No", `perm:deny:${req.requestId}`);
 
   try {
     await registeredBot.api.sendMessage(registeredChatId, text, {
@@ -126,7 +125,7 @@ export async function notifyPermission(req: PermissionRequest): Promise<void> {
     try {
       await registeredBot.api.sendMessage(
         registeredChatId,
-        `Permission required: ${req.toolName}\n\n${toolInputPreview}`,
+        req.toolInput,
         { reply_markup: keyboard }
       );
     } catch (err) {

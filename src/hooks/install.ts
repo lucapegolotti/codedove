@@ -37,17 +37,18 @@ mkdir -p "$CLAUDE_VOICE_DIR"
 INPUT=$(cat)
 
 TOOL_NAME=$(echo "$INPUT" | python3 -c "
-import sys, json
+import sys, json, re
 d = json.load(sys.stdin)
-print(d.get('tool_name', d.get('tool', 'unknown')))
+msg = d.get('message', '')
+m = re.search(r'permission to use (\\w+)', msg)
+print(m.group(1) if m else d.get('tool_name', 'unknown'))
 " 2>/dev/null || echo "unknown")
 
 TOOL_INPUT=$(echo "$INPUT" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-ti = d.get('tool_input', d.get('input', {}))
-print(json.dumps(ti) if not isinstance(ti, str) else ti)
-" 2>/dev/null || echo "{}")
+print(d.get('message', json.dumps(d)))
+" 2>/dev/null || echo "$INPUT")
 
 REQUEST_ID=$(python3 -c "import uuid; print(str(uuid.uuid4()))")
 REQUEST_FILE="$CLAUDE_VOICE_DIR/permission-request-\${REQUEST_ID}.json"

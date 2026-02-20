@@ -334,10 +334,10 @@ export function createBot(token: string): Bot {
         await ctx.answerCallbackQuery({ text: "Invalid permission request." });
         return;
       }
-      await respondToPermission(requestId, action === "approve").catch((err) => {
+      await respondToPermission(requestId, action === "deny" ? "deny" : "approve").catch((err) => {
         log({ message: `respondToPermission error: ${err instanceof Error ? err.message : String(err)}` });
       });
-      await ctx.answerCallbackQuery({ text: action === "approve" ? "Approved ✅" : "Denied ❌" });
+      await ctx.answerCallbackQuery({ text: action === "deny" ? "Denied ❌" : "Approved ✅" });
       return;
     }
 

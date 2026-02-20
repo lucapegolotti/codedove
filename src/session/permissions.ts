@@ -51,9 +51,9 @@ export function watchPermissionRequests(
   return () => { watcher.close(); };
 }
 
-export async function respondToPermission(requestId: string, approved: boolean): Promise<void> {
+export async function respondToPermission(requestId: string, action: "approve" | "deny"): Promise<void> {
   await mkdir(CLAUDE_VOICE_DIR, { recursive: true });
   const responsePath = join(CLAUDE_VOICE_DIR, `permission-response-${requestId}`);
-  await writeFile(responsePath, approved ? "approve" : "deny", "utf8");
-  log({ message: `permission response: ${approved ? "approved" : "denied"} (${requestId.slice(0, 8)})` });
+  await writeFile(responsePath, action, "utf8");
+  log({ message: `permission response: ${action} (${requestId.slice(0, 8)})` });
 }
