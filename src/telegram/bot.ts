@@ -10,11 +10,22 @@ import { registerForNotifications, resolveWaitingAction, notifyResponse, sendPin
 import { injectInput, findClaudePane, sendKeysToPane, sendRawKeyToPane, launchClaudeInWindow, killWindow } from "../session/tmux.js";
 import { watchForResponse, getFileSize } from "../session/monitor.js";
 import { respondToPermission } from "../session/permissions.js";
-import { writeFile, mkdir, unlink } from "fs/promises";
+import { writeFile, mkdir, unlink, access } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 
 const pendingSessions = new Map<string, { sessionId: string; cwd: string; projectName: string }>();
+
+const POLISH_VOICE_OFF_PATH = join(homedir(), ".claude-voice", "polish-voice-off");
+
+async function isVoicePolishEnabled(): Promise<boolean> {
+  try {
+    await access(POLISH_VOICE_OFF_PATH);
+    return false; // flag file exists → polish off
+  } catch {
+    return true; // flag file absent → polish on (default)
+  }
+}
 
 function timeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -199,7 +210,8 @@ export function createBot(token: string): Bot {
       const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
 
       const transcript = await transcribeAudio(audioBuffer, "voice.ogg");
-      const polished = await polishTranscript(transcript);
+      const polishEnabled = await isVoicePolishEnabled();
+      const polished = polishEnabled ? await polishTranscript(transcript) : transcript;
       log({ chatId, direction: "in", message: `[voice] ${transcript} → polished: ${polished}` });
 
       const attached = await ensureSession(ctx, chatId);
@@ -338,6 +350,18 @@ export function createBot(token: string): Bot {
 
   bot.command("compact", async (ctx) => {
     await sendClaudeCommand(ctx, "/compact");
+  });
+
+  bot.command("polishvoice", async (ctx) => {
+    const enabled = await isVoicePolishEnabled();
+    if (enabled) {
+      await mkdir(join(homedir(), ".claude-voice"), { recursive: true });
+      await writeFile(POLISH_VOICE_OFF_PATH, "", "utf8");
+      await ctx.reply("Voice polish *off*. Raw Whisper transcripts will be injected.", { parse_mode: "Markdown" });
+    } else {
+      await unlink(POLISH_VOICE_OFF_PATH).catch(() => {});
+      await ctx.reply("Voice polish *on*. Transcripts will be cleaned up before injection.", { parse_mode: "Markdown" });
+    }
   });
 
   bot.command("summarize", async (ctx) => {
