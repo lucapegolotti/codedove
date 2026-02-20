@@ -106,11 +106,24 @@ async function ensureSession(
 let activeWatcherStop: (() => void) | null = null;
 let activeWatcherOnComplete: (() => void) | null = null;
 
+// Snapshot the active session file and its current byte offset before injection.
+// Pass this to startInjectionWatcher so the baseline is set before Claude responds,
+// avoiding a race where a fast response is written before the watcher is set up.
+async function snapshotBaseline(
+  cwd: string
+): Promise<{ filePath: string; sessionId: string; size: number } | null> {
+  const latest = await getLatestSessionFileForCwd(cwd);
+  if (!latest) return null;
+  const size = await getFileSize(latest.filePath);
+  return { ...latest, size };
+}
+
 async function startInjectionWatcher(
   attached: { sessionId: string; cwd: string },
   chatId: number,
   onResponse?: (state: SessionResponseState) => Promise<void>,
-  onComplete?: () => void
+  onComplete?: () => void,
+  preBaseline?: { filePath: string; sessionId: string; size: number } | null
 ): Promise<void> {
   // Stop any watcher from a previous injection and flush its completion so the
   // previous turn's voice summary is still generated even when a new message
@@ -122,36 +135,32 @@ async function startInjectionWatcher(
     activeWatcherOnComplete = null;
   }
 
-  const injectionTime = Date.now();
-  let latest = await getLatestSessionFileForCwd(attached.cwd);
-  // If the file is stale (old session before launch), poll for up to 30s for a newer one
-  if (latest) {
-    const { mtimeMs } = await stat(latest.filePath).catch(() => ({ mtimeMs: 0 }));
-    if (mtimeMs < injectionTime - 60_000) {
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const newer = await getLatestSessionFileForCwd(attached.cwd);
-        if (newer && newer.filePath !== latest.filePath) {
-          latest = newer;
-          break;
-        }
-      }
+  let filePath: string;
+  let latestSessionId: string;
+  let baseline: number;
+
+  if (preBaseline) {
+    // Use the pre-injection snapshot — baseline was recorded before Claude responded
+    ({ filePath, sessionId: latestSessionId, size: baseline } = preBaseline);
+  } else {
+    // No pre-snapshot: find the session file now (fallback for waiting-prompt injections)
+    const latest = await getLatestSessionFileForCwd(attached.cwd);
+    if (!latest) {
+      log({ message: `watchForResponse: could not find JSONL for cwd ${attached.cwd}` });
+      onComplete?.();
+      return;
     }
+    filePath = latest.filePath;
+    latestSessionId = latest.sessionId;
+    baseline = await getFileSize(filePath);
   }
-  if (!latest) {
-    log({ message: `watchForResponse: could not find JSONL for cwd ${attached.cwd}` });
-    onComplete?.();
-    return;
-  }
-  const { filePath, sessionId: latestSessionId } = latest;
+
   // If Claude Code restarted and created a new session, update the attached record
   // so notifyResponse (which checks sessionId match) sends to the right session.
   if (latestSessionId !== attached.sessionId) {
     log({ message: `watchForResponse: session rotated ${attached.sessionId.slice(0, 8)} → ${latestSessionId.slice(0, 8)}, updating attached` });
     await writeFile(ATTACHED_SESSION_PATH, `${latestSessionId}\n${attached.cwd}`, "utf8").catch(() => {});
   }
-  const baseline = await getFileSize(filePath);
   log({ message: `watchForResponse started for ${latestSessionId.slice(0, 8)}, baseline=${baseline}` });
   activeWatcherOnComplete = onComplete ?? null;
   activeWatcherStop = watchForResponse(
@@ -169,6 +178,9 @@ async function startInjectionWatcher(
 
 async function processTextTurn(ctx: Context, chatId: number, text: string): Promise<void> {
   const attached = await ensureSession(ctx, chatId);
+  // Snapshot file position BEFORE injection — avoids missing fast responses where
+  // Claude writes to the JSONL before startInjectionWatcher reads the file size.
+  const preBaseline = attached ? await snapshotBaseline(attached.cwd) : null;
   const reply = await handleTurn(chatId, text, undefined, attached?.cwd, launchedPaneId);
 
   if (reply === "__SESSION_PICKER__") {
@@ -182,7 +194,7 @@ async function processTextTurn(ctx: Context, chatId: number, text: string): Prom
       ctx.replyWithChatAction("typing").catch(() => {});
     }, 4000);
     if (attached) {
-      await startInjectionWatcher(attached, chatId, undefined, () => clearInterval(typingInterval));
+      await startInjectionWatcher(attached, chatId, undefined, () => clearInterval(typingInterval), preBaseline);
     } else {
       clearInterval(typingInterval);
     }
@@ -234,6 +246,7 @@ export function createBot(token: string): Bot {
       log({ chatId, direction: "in", message: `[voice] ${transcript} → polished: ${polished}` });
 
       const attached = await ensureSession(ctx, chatId);
+      const preBaseline = attached ? await snapshotBaseline(attached.cwd) : null;
       const injected = transcript ? `${polished}\n\n[transcribed from voice, may contain inaccuracies]` : polished;
       const reply = await handleTurn(chatId, injected, undefined, attached?.cwd, launchedPaneId);
 
@@ -277,7 +290,7 @@ export function createBot(token: string): Bot {
               });
           };
 
-          await startInjectionWatcher(attached, chatId, voiceResponseHandler, voiceCompleteHandler);
+          await startInjectionWatcher(attached, chatId, voiceResponseHandler, voiceCompleteHandler, preBaseline);
         } else {
           clearInterval(typingInterval);
         }
