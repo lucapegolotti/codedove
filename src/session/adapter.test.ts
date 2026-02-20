@@ -17,10 +17,11 @@ beforeEach(() => vi.clearAllMocks());
 
 describe("clearAdapterSession", () => {
   it("removes a session so it no longer appears in getActiveSessions", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.mocked(query).mockImplementation(async function* () {
       yield { type: "system", subtype: "init", session_id: "abc-session-123" };
       yield { type: "result", subtype: "success", result: "done" };
-    });
+    } as any);
 
     await runAgentTurn(99, "do something");
     expect(getActiveSessions()).toContain(99);
