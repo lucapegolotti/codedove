@@ -92,15 +92,17 @@ export async function readSessionLines(filePath: string): Promise<string[]> {
   return lines;
 }
 
-export async function listSessions(limit = 5): Promise<SessionInfo[]> {
-  const results: SessionInfo[] = [];
-
+// Returns the most recently modified session per project directory, sorted by
+// recency. One entry per project eliminates duplicates from multi-session projects.
+export async function listSessions(limit = 20): Promise<SessionInfo[]> {
   let projectDirs: string[];
   try {
     projectDirs = await readdir(PROJECTS_PATH);
   } catch {
     return [];
   }
+
+  const results: SessionInfo[] = [];
 
   for (const dir of projectDirs) {
     const dirPath = `${PROJECTS_PATH}/${dir}`;
@@ -111,31 +113,34 @@ export async function listSessions(limit = 5): Promise<SessionInfo[]> {
       continue;
     }
 
+    // Pick only the most recently modified session file for this project
+    let bestFile: string | null = null;
+    let bestMtime = new Date(0);
     for (const file of files) {
-      const sessionId = file.replace(".jsonl", "");
-      const filePath = `${dirPath}/${file}`;
-
-      let mtime: Date;
       try {
-        mtime = (await stat(filePath)).mtime;
+        const m = (await stat(`${dirPath}/${file}`)).mtime;
+        if (m > bestMtime) { bestMtime = m; bestFile = file; }
       } catch {
         continue;
       }
-
-      const encoded = dir.replace(/^-/, "").replace(/-/g, "/");
-      const projectName = encoded.split("/").pop() || dir;
-
-      const lines = await readSessionLines(filePath).catch(() => []);
-      const parsed = parseJsonlLines(lines);
-
-      results.push({
-        sessionId,
-        cwd: parsed.cwd,
-        projectName,
-        lastMessage: parsed.lastMessage,
-        mtime,
-      });
     }
+    if (!bestFile) continue;
+
+    const sessionId = bestFile.replace(".jsonl", "");
+    const filePath = `${dirPath}/${bestFile}`;
+    const encoded = dir.replace(/^-/, "").replace(/-/g, "/");
+    const projectName = encoded.split("/").pop() || dir;
+
+    const lines = await readSessionLines(filePath).catch(() => []);
+    const parsed = parseJsonlLines(lines);
+
+    results.push({
+      sessionId,
+      cwd: parsed.cwd,
+      projectName,
+      lastMessage: parsed.lastMessage,
+      mtime: bestMtime,
+    });
   }
 
   results.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());

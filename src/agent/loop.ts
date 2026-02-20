@@ -97,7 +97,9 @@ export async function handleTurn(
     }
   }
 
-  // Only persist cwd from internal state (not from caller-supplied knownCwd)
-  chatState.set(chatId, { lastBotMessage: reply, lastCwd: state?.lastCwd });
+  // Don't store sentinel values — they would corrupt intent context for the next turn
+  if (reply !== "__INJECTED__" && reply !== "__SESSION_PICKER__") {
+    chatState.set(chatId, { lastBotMessage: reply, lastCwd: state?.lastCwd });
+  }
   return reply;
 }
