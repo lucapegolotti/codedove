@@ -7,7 +7,6 @@ import { log } from "../logger.js";
 import { listSessions, ATTACHED_SESSION_PATH, getAttachedSession, getLatestSessionFileForCwd } from "../session/history.js";
 import { registerForNotifications, resolveWaitingAction, notifyResponse, sendPing } from "./notifications.js";
 import { injectInput, findClaudePane, sendKeysToPane, sendRawKeyToPane, launchClaudeInWindow, killWindow } from "../session/tmux.js";
-import { clearAdapterSession } from "../session/adapter.js";
 import { watchForResponse, getFileSize } from "../session/monitor.js";
 import { respondToPermission } from "../session/permissions.js";
 import { writeFile, mkdir, unlink } from "fs/promises";
@@ -85,7 +84,6 @@ async function ensureSession(
   await mkdir(`${homedir()}/.claude-voice`, { recursive: true });
   await writeFile(ATTACHED_SESSION_PATH, `${s.sessionId}\n${s.cwd}`, "utf8");
   clearChatState(chatId);
-  clearAdapterSession(chatId);
   await ctx.reply(`Auto-attached to \`${s.projectName}\`.`, { parse_mode: "Markdown" });
   return { sessionId: s.sessionId, cwd: s.cwd };
 }
@@ -356,7 +354,6 @@ export function createBot(token: string): Bot {
       // file did not exist
     }
     clearChatState(ctx.chat.id);
-    clearAdapterSession(ctx.chat.id);
     if (activeWatcherStop) {
       activeWatcherStop();
       activeWatcherStop = null;
@@ -375,7 +372,6 @@ export function createBot(token: string): Bot {
 
     try { await unlink(ATTACHED_SESSION_PATH); } catch { /* already gone */ }
     clearChatState(ctx.chat.id);
-    clearAdapterSession(ctx.chat.id);
     if (activeWatcherStop) {
       activeWatcherStop();
       activeWatcherStop = null;
@@ -488,7 +484,6 @@ export function createBot(token: string): Bot {
         await mkdir(`${homedir()}/.claude-voice`, { recursive: true });
         await writeFile(ATTACHED_SESSION_PATH, `${session.sessionId}\n${session.cwd}`, "utf8");
         clearChatState(ctx.chat!.id);
-        clearAdapterSession(ctx.chat!.id);
         await ctx.answerCallbackQuery({ text: "Attached!" });
         await ctx.reply(`Attached to \`${session.projectName}\`. Send your first message.`, {
           parse_mode: "Markdown",
@@ -539,7 +534,6 @@ export function createBot(token: string): Bot {
       await mkdir(`${homedir()}/.claude-voice`, { recursive: true });
       await writeFile(ATTACHED_SESSION_PATH, `${session.sessionId}\n${session.cwd}`, "utf8");
       clearChatState(ctx.chat!.id);
-      clearAdapterSession(ctx.chat!.id);
 
       await ctx.answerCallbackQuery({ text: "Launched!" });
       const flag = skipPermissions ? " with `--dangerously-skip-permissions`" : "";
