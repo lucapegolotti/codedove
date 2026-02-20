@@ -194,6 +194,7 @@ export function createBot(token: string): Bot {
       if (reply === "__INJECTED__") {
         if (polished) {
           await ctx.reply(`\`[transcription]\` ${polished}`);
+          log({ chatId, direction: "out", message: `[transcription] ${polished.slice(0, 80)}` });
         }
         await ctx.replyWithChatAction("typing");
         const typingInterval = setInterval(() => {
@@ -208,7 +209,10 @@ export function createBot(token: string): Bot {
             // Text blocks are streamed as they arrive. If two blocks arrive in rapid
             // succession, Telegram delivery order is non-deterministic — acceptable here
             // since the audio summary will always reflect the final state.
-            await sendMarkdownReply(ctx, `\`[claude-code]\` ${state.text}`).catch(() => {});
+            await sendMarkdownReply(ctx, `\`[claude-code]\` ${state.text}`).catch((err) => {
+              log({ chatId, message: `stream text error: ${err instanceof Error ? err.message : String(err)}` });
+            });
+            log({ chatId, direction: "out", message: `[stream] ${state.text.slice(0, 80)}` });
 
             // Debounce for final audio summary
             lastText = state.text;
