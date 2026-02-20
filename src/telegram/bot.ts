@@ -6,7 +6,7 @@ import type { SessionResponseState } from "../session/monitor.js";
 import { log } from "../logger.js";
 import { listSessions, ATTACHED_SESSION_PATH, getAttachedSession, getLatestSessionFileForCwd } from "../session/history.js";
 import { registerForNotifications, resolveWaitingAction, notifyResponse, sendPing } from "./notifications.js";
-import { injectInput, findClaudePane, sendKeysToPane, sendRawKeyToPane } from "../session/tmux.js";
+import { injectInput, findClaudePane, sendKeysToPane, sendRawKeyToPane, launchClaudeInWindow, killWindow } from "../session/tmux.js";
 import { clearAdapterSession } from "../session/adapter.js";
 import { watchForResponse, getFileSize } from "../session/monitor.js";
 import { respondToPermission } from "../session/permissions.js";
@@ -480,6 +480,47 @@ export function createBot(token: string): Bot {
           { parse_mode: "Markdown", reply_markup: keyboard }
         );
       }
+      return;
+    }
+
+    if (data.startsWith("launch:")) {
+      if (data.startsWith("launch:cancel:")) {
+        await ctx.answerCallbackQuery({ text: "Cancelled." });
+        await ctx.editMessageReplyMarkup();
+        return;
+      }
+
+      const skipPermissions = data.startsWith("launch:skip:");
+      const sessionId = skipPermissions
+        ? data.slice("launch:skip:".length)
+        : data.slice("launch:".length);
+
+      const session = pendingSessions.get(sessionId);
+      if (!session) {
+        await ctx.answerCallbackQuery({ text: "Session not found — try /sessions again." });
+        return;
+      }
+
+      try {
+        await launchClaudeInWindow(session.cwd, session.projectName, skipPermissions);
+      } catch (err) {
+        await ctx.answerCallbackQuery({ text: "Failed to launch tmux window." });
+        log({ message: `launchClaudeInWindow error: ${err instanceof Error ? err.message : String(err)}` });
+        return;
+      }
+
+      // Attach to this project's cwd — sessionId will be discovered lazily by the watcher
+      await mkdir(`${homedir()}/.claude-voice`, { recursive: true });
+      await writeFile(ATTACHED_SESSION_PATH, `${session.sessionId}\n${session.cwd}`, "utf8");
+      clearChatState(ctx.chat!.id);
+      clearAdapterSession(ctx.chat!.id);
+
+      await ctx.answerCallbackQuery({ text: "Launched!" });
+      const flag = skipPermissions ? " with `--dangerously-skip-permissions`" : "";
+      await ctx.editMessageText(
+        `Launching Claude Code${flag} at \`${session.projectName}\`…\n\nSend a message once it's ready.`,
+        { parse_mode: "Markdown" }
+      );
       return;
     }
   });
