@@ -215,7 +215,7 @@ export function createBot(token: string): Bot {
       log({ chatId, direction: "in", message: `[voice] ${transcript} → polished: ${polished}` });
 
       const attached = await ensureSession(ctx, chatId);
-      const injected = polished ? `${polished}\n\n[transcribed from voice, may contain inaccuracies]` : polished;
+      const injected = transcript ? `${polished}\n\n[transcribed from voice, may contain inaccuracies]` : polished;
       const reply = await handleTurn(chatId, injected, undefined, attached?.cwd);
 
       if (reply === "__SESSION_PICKER__") {
@@ -224,7 +224,7 @@ export function createBot(token: string): Bot {
       }
 
       if (reply === "__INJECTED__") {
-        if (polished) {
+        if (transcript) {
           await ctx.reply(`[transcription] ${polished}`);
           log({ chatId, direction: "out", message: `[transcription] ${polished.slice(0, 80)}` });
         }
