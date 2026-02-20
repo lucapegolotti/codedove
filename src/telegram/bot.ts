@@ -437,6 +437,7 @@ export function createBot(token: string): Bot {
       await ctx.reply("Detached. Close the tmux Claude Code window too?", { reply_markup: keyboard });
     } else {
       await ctx.reply("Detached.");
+    }
   });
 
   bot.command("close_session", async (ctx) => {
