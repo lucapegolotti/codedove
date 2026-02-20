@@ -204,7 +204,8 @@ export function createBot(token: string): Bot {
       log({ chatId, direction: "in", message: `[voice] ${transcript} → polished: ${polished}` });
 
       const attached = await ensureSession(ctx, chatId);
-      const reply = await handleTurn(chatId, polished, undefined, attached?.cwd);
+      const injected = polished ? `${polished}\n\n[transcribed from voice, may contain inaccuracies]` : polished;
+      const reply = await handleTurn(chatId, injected, undefined, attached?.cwd);
 
       if (reply === "__SESSION_PICKER__") {
         await sendSessionPicker(ctx);
