@@ -157,16 +157,16 @@ export function startMonitor(onWaiting: WaitingCallback): () => void {
 }
 
 // Watches a specific JSONL file for new assistant text after a given byte offset.
-// Calls onResponse with the first new assistant text found, then stops.
-// Used for targeted per-injection response tracking (avoids debounce issues
-// when Claude Code continuously writes tool results during processing).
+// Fires onResponse immediately for each new text block (no debounce — the Stop
+// hook's result event is the authoritative signal for turn completion).
+// When the result event is detected, any unsent last text is delivered first,
+// then onComplete is called.
 export function watchForResponse(
   filePath: string,
   baselineSize: number,
   onResponse: ResponseCallback,
   timeoutMs = 120_000,
   onPing?: () => void,
-  debounceMs = 1000,
   onComplete?: () => void
 ): () => void {
   const parts = filePath.split("/");
@@ -175,7 +175,6 @@ export function watchForResponse(
   const projectName = decodeProjectName(projectDir);
   const cwd = parts.slice(0, -2).join("/"); // approximation; real cwd read from file
 
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let done = false;
   let lastSentText: string | null = null;
   let completionScheduled = false;
@@ -187,7 +186,6 @@ export function watchForResponse(
   });
 
   const cleanup = () => {
-    if (debounceTimer) clearTimeout(debounceTimer);
     clearTimeout(pingId);
     watcher.close();
   };
@@ -208,7 +206,7 @@ export function watchForResponse(
     if (done) return;
 
     readFile(filePath)
-      .then((buf) => {
+      .then(async (buf) => {
         if (done) return;
         const newContent = buf.subarray(baselineSize).toString("utf8");
         const lines = newContent.split("\n").filter(Boolean);
@@ -246,31 +244,30 @@ export function watchForResponse(
         if (isComplete && !completionScheduled) {
           completionScheduled = true;
           clearTimeout(timeoutId);
-          // Let any pending debounce fire first, then shut down
-          setTimeout(() => {
-            done = true;
-            cleanup();
-            log({ message: `watchForResponse: session ${sessionId.slice(0, 8)} completed (result event)` });
-            onComplete?.();
-          }, debounceMs + 200);
+          done = true;
+          cleanup();
+          // Deliver last text block synchronously before signalling completion
+          if (latestText && latestText !== lastSentText) {
+            lastSentText = latestText;
+            log({ message: `watchForResponse firing for session ${sessionId.slice(0, 8)}: ${latestText.slice(0, 60)}` });
+            await onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText }).catch(
+              (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
+            );
+          }
+          log({ message: `watchForResponse: session ${sessionId.slice(0, 8)} completed (result event)` });
+          onComplete?.();
+          return;
         }
 
-        // No new text, or same text already sent — don't restart debounce
+        // No new text, or already sent — nothing to do
         if (!latestText || latestText === lastSentText) return;
 
-        // New text found — debounce to let Claude finish writing this entry
-        if (debounceTimer) clearTimeout(debounceTimer);
-        const capturedText = latestText;
-        const capturedCwd = latestCwd;
-
-        debounceTimer = setTimeout(async () => {
-          if (done || capturedText === lastSentText) return;
-          lastSentText = capturedText;
-          log({ message: `watchForResponse firing for session ${sessionId.slice(0, 8)}: ${capturedText.slice(0, 60)}` });
-          await onResponse({ sessionId, projectName, cwd: capturedCwd, filePath, text: capturedText }).catch(
-            (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
-          );
-        }, debounceMs);
+        // Fire immediately — no debounce needed since the Stop hook signals completion
+        lastSentText = latestText;
+        log({ message: `watchForResponse firing for session ${sessionId.slice(0, 8)}: ${latestText.slice(0, 60)}` });
+        await onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText }).catch(
+          (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
+        );
       })
       .catch(() => {
         // file unreadable — keep watching

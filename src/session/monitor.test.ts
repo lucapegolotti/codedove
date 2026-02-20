@@ -84,9 +84,7 @@ describe("watchForResponse", () => {
       async (state) => {
         received.push(state);
       },
-      10_000,
-      undefined,
-      50
+      10_000
     );
 
     await new Promise((r) => setTimeout(r, 200));
@@ -109,9 +107,7 @@ describe("watchForResponse", () => {
       async (state) => {
         received.push(state);
       },
-      10_000,
-      undefined,
-      50
+      10_000
     );
 
     await new Promise((r) => setTimeout(r, 500));
@@ -130,9 +126,7 @@ describe("watchForResponse", () => {
       async (state) => {
         received.push(state);
       },
-      10_000,
-      undefined,
-      50
+      10_000
     );
 
     await new Promise((r) => setTimeout(r, 200));
@@ -156,9 +150,7 @@ describe("watchForResponse", () => {
       async (state) => {
         received.push(state);
       },
-      10_000,
-      undefined,
-      50
+      10_000
     );
 
     await new Promise((r) => setTimeout(r, 200));
@@ -184,9 +176,7 @@ describe("watchForResponse", () => {
       async (state) => {
         received.push(state);
       },
-      10_000,
-      undefined,
-      50
+      10_000
     );
 
     await new Promise((r) => setTimeout(r, 200));
@@ -210,15 +200,13 @@ describe("watchForResponse", () => {
       async () => {},
       10_000,
       undefined,
-      50,
       () => { completed = true; }
     );
 
     await new Promise((r) => setTimeout(r, 100));
     // Write assistant text + result in one append so a single change event sees both
     await appendFile(tmpFile, assistantLine("Step one.") + JSON.stringify({ type: "result" }) + "\n");
-    // debounceMs(50) + 200ms completion delay
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, 300));
 
     expect(completed).toBe(true);
   });
