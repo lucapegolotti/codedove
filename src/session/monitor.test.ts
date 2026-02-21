@@ -200,7 +200,7 @@ describe("watchForResponse", () => {
     await new Promise((r) => setTimeout(r, 100));
     // Write assistant text + result in one append so a single change event sees both
     await appendFile(tmpFile, assistantLine("Step one.") + JSON.stringify({ type: "result" }) + "\n");
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 900)); // 500ms delay + buffer
 
     expect(completed).toBe(true);
   });

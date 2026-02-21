@@ -236,23 +236,55 @@ export function watchForResponse(
 
         if (isComplete && !completionScheduled) {
           completionScheduled = true;
-          done = true;
-          cleanup();
-          // Deliver last text block before signalling completion.
+          // Send any text visible right now, then wait briefly before closing.
+          // The Stop hook writes the result event concurrently with Claude Code
+          // flushing the final JSONL entry — a short delay lets that write land
+          // so we don't miss the last text block.
           if (latestText && latestText !== lastSentText) {
             lastSentText = latestText;
             log({ message: `watchForResponse firing for session ${sessionId.slice(0, 8)}: ${latestText.slice(0, 60)}` });
-            await onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText }).catch(
+            pendingResponse = onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText }).catch(
               (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
             );
-          } else {
-            // Text was already sent by a concurrent change handler that is still
-            // awaiting the Telegram API call — wait for it to finish so that
-            // onComplete (e.g. voice synthesis) sees the populated allBlocks array.
             await pendingResponse;
           }
-          log({ message: `watchForResponse: session ${sessionId.slice(0, 8)} completed (result event)` });
-          onComplete?.();
+          setTimeout(async () => {
+            if (done) return;
+            done = true;
+            cleanup();
+            // Final read — catch any text written after the result event
+            try {
+              const finalBuf = await readFile(filePath);
+              const finalLines = finalBuf.subarray(baselineSize).toString("utf8").split("\n").filter(Boolean);
+              let finalText: string | null = null;
+              let finalCwd = cwd;
+              for (let i = finalLines.length - 1; i >= 0; i--) {
+                try {
+                  const entry = JSON.parse(finalLines[i]);
+                  if (entry.type !== "assistant") continue;
+                  const textBlocks = (entry.message?.content ?? []).filter(
+                    (c: { type: string }) => c.type === "text"
+                  );
+                  if (textBlocks.length === 0) continue;
+                  const text: string = textBlocks[textBlocks.length - 1].text;
+                  if (!text.trim()) continue;
+                  finalText = text;
+                  if (entry.cwd) finalCwd = entry.cwd;
+                  break;
+                } catch { continue; }
+              }
+              if (finalText && finalText !== lastSentText) {
+                lastSentText = finalText;
+                log({ message: `watchForResponse final-flush for session ${sessionId.slice(0, 8)}: ${finalText.slice(0, 60)}` });
+                await onResponse({ sessionId, projectName, cwd: finalCwd, filePath, text: finalText }).catch(
+                  (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
+                );
+              }
+            } catch { /* file unreadable */ }
+            await pendingResponse;
+            log({ message: `watchForResponse: session ${sessionId.slice(0, 8)} completed (result event)` });
+            onComplete?.();
+          }, 500);
           return;
         }
 
