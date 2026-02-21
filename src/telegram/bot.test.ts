@@ -1,13 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createBot } from "./bot.js";
-import { findClaudePane, launchClaudeInWindow, killWindow } from "../session/tmux.js";
-import { getAttachedSession, listSessions } from "../session/history.js";
+import { findClaudePane, listTmuxPanes, isClaudePane, launchClaudeInWindow, killWindow } from "../session/tmux.js";
+import { getAttachedSession, listSessions, getLatestSessionFileForCwd, readSessionLines, parseJsonlLines } from "../session/history.js";
 import { handleTurn, clearChatState } from "../agent/loop.js";
 import { unlink, writeFile } from "fs/promises";
 import { watchForResponse, getFileSize } from "../session/monitor.js";
 
 vi.mock("../session/tmux.js", () => ({
   findClaudePane: vi.fn(),
+  listTmuxPanes: vi.fn(),
+  isClaudePane: vi.fn(),
   launchClaudeInWindow: vi.fn(),
   killWindow: vi.fn(),
   injectInput: vi.fn(),
@@ -20,6 +22,8 @@ vi.mock("../session/history.js", () => ({
   getAttachedSession: vi.fn(),
   listSessions: vi.fn(),
   getLatestSessionFileForCwd: vi.fn(),
+  readSessionLines: vi.fn().mockResolvedValue([]),
+  parseJsonlLines: vi.fn().mockReturnValue({ lastMessage: "" }),
 }));
 
 vi.mock("../agent/loop.js", () => ({
@@ -243,7 +247,12 @@ describe("session: callbacks", () => {
   });
 
   async function setupWithSessions(bot: Awaited<ReturnType<typeof makeBot>>["bot"], apiCalls: ApiCall[]) {
-    vi.mocked(listSessions).mockResolvedValue([SESSION]);
+    const pane = { paneId: "%1", cwd: SESSION.cwd, command: "claude" };
+    vi.mocked(listTmuxPanes).mockResolvedValue([pane]);
+    vi.mocked(isClaudePane).mockReturnValue(true);
+    vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({ sessionId: SESSION.sessionId, filePath: `/tmp/${SESSION.sessionId}.jsonl` });
+    vi.mocked(readSessionLines).mockResolvedValue([]);
+    vi.mocked(parseJsonlLines).mockReturnValue({ lastMessage: SESSION.lastMessage });
     await bot.handleUpdate(commandUpdate("/sessions") as any);
     // Clear apiCalls after /sessions so we start fresh for the actual test assertions
     apiCalls.length = 0;
@@ -289,7 +298,7 @@ describe("session: callbacks", () => {
 describe("launch: callbacks", () => {
   const SESSION = {
     sessionId: "s1",
-    cwd: "/proj",
+    cwd: "/proj/myproject",
     projectName: "myproject",
     lastMessage: "",
     mtime: new Date(),
@@ -300,7 +309,12 @@ describe("launch: callbacks", () => {
   });
 
   async function setupWithSessions(bot: Awaited<ReturnType<typeof makeBot>>["bot"], apiCalls: ApiCall[]) {
-    vi.mocked(listSessions).mockResolvedValue([SESSION]);
+    const pane = { paneId: "%1", cwd: SESSION.cwd, command: "claude" };
+    vi.mocked(listTmuxPanes).mockResolvedValue([pane]);
+    vi.mocked(isClaudePane).mockReturnValue(true);
+    vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({ sessionId: SESSION.sessionId, filePath: `/tmp/${SESSION.sessionId}.jsonl` });
+    vi.mocked(readSessionLines).mockResolvedValue([]);
+    vi.mocked(parseJsonlLines).mockReturnValue({ lastMessage: SESSION.lastMessage });
     await bot.handleUpdate(commandUpdate("/sessions") as any);
     apiCalls.length = 0;
   }
@@ -327,7 +341,7 @@ describe("launch: callbacks", () => {
 
     await bot.handleUpdate(callbackUpdate("launch:s1") as any);
 
-    expect(launchClaudeInWindow).toHaveBeenCalledWith("/proj", "myproject", false);
+    expect(launchClaudeInWindow).toHaveBeenCalledWith("/proj/myproject", "myproject", false);
     expect(writeFile).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining("s1"),
@@ -357,7 +371,7 @@ describe("launch: callbacks", () => {
 
     await bot.handleUpdate(callbackUpdate("launch:skip:s1") as any);
 
-    expect(launchClaudeInWindow).toHaveBeenCalledWith("/proj", "myproject", true);
+    expect(launchClaudeInWindow).toHaveBeenCalledWith("/proj/myproject", "myproject", true);
   });
 });
 
