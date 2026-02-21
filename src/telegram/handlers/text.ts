@@ -115,7 +115,6 @@ export async function startInjectionWatcher(
     filePath,
     baseline,
     wrappedOnResponse,
-    3_600_000,
     () => sendPing("⏳ Still working..."),
     () => {
       activeWatcherOnComplete = null;
@@ -155,7 +154,6 @@ async function pollForPostCompactionSession(
         latest.filePath,
         0,
         async (state) => { await (onResponse ?? notifyResponse)(state); },
-        3_600_000,
         () => sendPing("⏳ Still working..."),
         () => {
           activeWatcherOnComplete = null;

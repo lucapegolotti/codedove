@@ -15,7 +15,7 @@ export type TmuxResult =
   | { found: false; reason: "no_tmux" | "no_claude_pane" | "ambiguous"; panes?: TmuxPane[] };
 
 // Claude Code sets process.title to its version string (e.g. "2.1.47"), not "claude"
-function isClaudePane(p: TmuxPane): boolean {
+export function isClaudePane(p: TmuxPane): boolean {
   return p.command.includes("claude") || /^\d+\.\d+\.\d+/.test(p.command);
 }
 

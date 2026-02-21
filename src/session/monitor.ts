@@ -163,7 +163,6 @@ export function watchForResponse(
   filePath: string,
   baselineSize: number,
   onResponse: ResponseCallback,
-  timeoutMs = 120_000,
   onPing?: () => void,
   onComplete?: () => void
 ): () => void {
@@ -195,44 +194,6 @@ export function watchForResponse(
   const pingId = setTimeout(() => {
     if (!done && lastSentText === null) onPing?.();
   }, 60_000);
-
-  const timeoutId = setTimeout(async () => {
-    if (!done) {
-      done = true;
-      cleanup();
-      log({ message: `watchForResponse timeout for session ${sessionId.slice(0, 8)}` });
-      // Deliver any last unsent text before giving up (e.g. stop_hook_active skipped result event)
-      try {
-        const buf = await readFile(filePath);
-        const lines = buf.subarray(baselineSize).toString("utf8").split("\n").filter(Boolean);
-        let latestText: string | null = null;
-        let latestCwd = cwd;
-        for (let i = lines.length - 1; i >= 0; i--) {
-          try {
-            const entry = JSON.parse(lines[i]);
-            if (entry.type !== "assistant") continue;
-            const textBlocks = (entry.message?.content ?? []).filter(
-              (c: { type: string }) => c.type === "text"
-            );
-            if (textBlocks.length === 0) continue;
-            const text: string = textBlocks[textBlocks.length - 1].text;
-            if (!text.trim()) continue;
-            latestText = text;
-            if (entry.cwd) latestCwd = entry.cwd;
-            break;
-          } catch { continue; }
-        }
-        if (latestText && latestText !== lastSentText) {
-          lastSentText = latestText;
-          log({ message: `watchForResponse timeout-flush for session ${sessionId.slice(0, 8)}: ${latestText.slice(0, 60)}` });
-          await onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText }).catch(
-            (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
-          );
-        }
-      } catch { /* file unreadable */ }
-      onComplete?.();
-    }
-  }, timeoutMs);
 
   watcher.on("change", () => {
     if (done) return;
@@ -275,7 +236,6 @@ export function watchForResponse(
 
         if (isComplete && !completionScheduled) {
           completionScheduled = true;
-          clearTimeout(timeoutId);
           done = true;
           cleanup();
           // Deliver last text block before signalling completion.
@@ -318,7 +278,6 @@ export function watchForResponse(
 
   return () => {
     done = true;
-    clearTimeout(timeoutId);
     cleanup();
   };
 }
