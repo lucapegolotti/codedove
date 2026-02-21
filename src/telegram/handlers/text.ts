@@ -9,59 +9,93 @@ import { sendSessionPicker, launchedPaneId } from "./sessions.js";
 import type { SessionResponseState, DetectedImage } from "../../session/monitor.js";
 import { pendingImages, pendingImageCount, clearPendingImageCount } from "./callbacks.js";
 import { InputFile } from "grammy";
-import { writeFile, mkdir, readFile, stat } from "fs/promises";
+import { writeFile, mkdir, readFile } from "fs/promises";
 import { homedir } from "os";
-// After a turn completes, scan Bash tool_result outputs for image file paths.
-// When a script prints something like "/tmp/chart.png", we detect and offer it.
-// Only images created/modified after startTime are included to avoid false positives
-// from pre-existing files whose paths happen to appear in tool output.
-async function scanForScriptImages(filePath: string, baseline: number, startTime: number): Promise<void> {
-  const buf = await readFile(filePath).catch(() => null);
-  if (!buf) return;
-  const lines = buf.subarray(baseline).toString("utf8").split("\n").filter(Boolean);
-  const seenPaths = new Set<string>();
-  const images: DetectedImage[] = [];
+import Anthropic from "@anthropic-ai/sdk";
 
-  for (const line of lines) {
-    try {
-      const entry = JSON.parse(line);
-      if (entry.type !== "user") continue;
-      const content: unknown[] = entry.message?.content ?? [];
-      for (const block of content) {
-        if (typeof block !== "object" || block === null) continue;
-        const b = block as Record<string, unknown>;
-        if (b["type"] !== "tool_result") continue;
-        // Only look at text tool_results (Bash stdout), not image ones
-        const text = typeof b["content"] === "string" ? b["content"] : null;
-        if (!text) continue;
-        for (const rawLine of text.split("\n")) {
-          const candidate = rawLine.trim();
-          // Require an absolute path with no spaces to avoid false positives
-          if (/^\/\S+\.(png|jpg|jpeg|gif|webp)$/i.test(candidate) && !seenPaths.has(candidate)) {
-            seenPaths.add(candidate);
-            try {
-              const fileStat = await stat(candidate);
-              // Skip files that predate this turn — they weren't created by this session
-              if (fileStat.mtimeMs < startTime) continue;
-              const imgBuf = await readFile(candidate);
-              const ext = candidate.split(".").pop()!.toLowerCase();
-              const mediaType =
-                ext === "jpg" || ext === "jpeg" ? "image/jpeg" :
-                ext === "gif" ? "image/gif" :
-                ext === "webp" ? "image/webp" : "image/png";
-              images.push({ mediaType, data: imgBuf.toString("base64") });
-            } catch { /* file doesn't exist — skip */ }
-          }
+let anthropic: Anthropic | null = null;
+function getAnthropicClient(): Anthropic {
+  return (anthropic ??= new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }));
+}
+
+// After a turn completes, check if the response text suggests images were created.
+// Uses Haiku to classify, then asks Claude Code for the exact file paths if so.
+async function checkForCreatedImages(
+  responseText: string,
+  cwd: string
+): Promise<void> {
+  // Quick keyword pre-filter — skip Haiku call if no image-related words
+  if (!/\.(png|jpg|jpeg|gif|webp)|image|chart|plot|graph|screenshot|figure/i.test(responseText)) return;
+
+  // Ask Haiku: did this turn create new image files?
+  let answer = "NO";
+  try {
+    const resp = await getAnthropicClient().messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 10,
+      messages: [{
+        role: "user",
+        content: `Did the following assistant response describe creating or generating image files (png/jpg/gif/webp)? Reply with only YES or NO.\n\n${responseText.slice(0, 1000)}`,
+      }],
+    });
+    const block = resp.content[0];
+    answer = block.type === "text" ? block.text.trim().toUpperCase() : "NO";
+  } catch (err) {
+    log({ message: `image classifier error: ${err instanceof Error ? err.message : String(err)}` });
+    return;
+  }
+
+  if (!answer.startsWith("YES")) return;
+
+  // Ask Claude Code for the exact list of image paths it created
+  const result = await (await import("../../session/tmux.js")).injectInput(
+    cwd,
+    "List only the absolute file paths of image files you created in this turn, one per line. Reply with ONLY the paths, nothing else."
+  );
+  if (!result.found) return;
+
+  // Watch for the single-turn response containing the paths
+  const latest = await getLatestSessionFileForCwd(cwd);
+  if (!latest) return;
+  const baseline = await getFileSize(latest.filePath);
+
+  await new Promise<void>((resolve) => {
+    const stop = watchForResponse(
+      latest.filePath,
+      baseline,
+      async (state) => {
+        stop();
+        const paths = state.text
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => /^\/\S+\.(png|jpg|jpeg|gif|webp)$/i.test(l));
+
+        const images: DetectedImage[] = [];
+        for (const p of paths) {
+          try {
+            const buf = await readFile(p);
+            const ext = p.split(".").pop()!.toLowerCase();
+            const mediaType = ext === "jpg" || ext === "jpeg" ? "image/jpeg"
+              : ext === "gif" ? "image/gif"
+              : ext === "webp" ? "image/webp"
+              : "image/png";
+            images.push({ mediaType, data: buf.toString("base64") });
+          } catch { /* file not found — skip */ }
         }
-      }
-    } catch { continue; }
-  }
 
-  if (images.length > 0) {
-    const key = `${Date.now()}`;
-    pendingImages.set(key, images);
-    await notifyImages(images, key);
-  }
+        if (images.length > 0) {
+          const key = `${Date.now()}`;
+          pendingImages.set(key, images);
+          await notifyImages(images, key);
+        }
+        resolve();
+      },
+      undefined,
+      () => resolve()
+    );
+    // Safety timeout
+    setTimeout(resolve, 30_000);
+  });
 }
 
 export let activeWatcherStop: (() => void) | null = null;
@@ -152,15 +186,15 @@ export async function startInjectionWatcher(
     await writeFile(ATTACHED_SESSION_PATH, `${latestSessionId}\n${attached.cwd}`, "utf8").catch(() => {});
   }
 
+  let lastResponseText = "";
   const wrappedOnResponse = async (state: SessionResponseState) => {
+    lastResponseText = state.text;
     await (onResponse ?? notifyResponse)(state);
   };
 
   log({ message: `watchForResponse started for ${latestSessionId.slice(0, 8)}, baseline=${baseline}` });
   activeWatcherOnComplete = onComplete ?? null;
-  const watchedFilePath = filePath;
   const watchedCwd = attached.cwd;
-  const watcherStartTime = Date.now();
   activeWatcherStop = watchForResponse(
     filePath,
     baseline,
@@ -169,8 +203,8 @@ export async function startInjectionWatcher(
     () => {
       activeWatcherOnComplete = null;
       onComplete?.();
-      void scanForScriptImages(watchedFilePath, baseline, watcherStartTime);
       void sendPing("✅ Done.");
+      if (lastResponseText) void checkForCreatedImages(lastResponseText, watchedCwd);
     },
     async (images: DetectedImage[]) => {
       const key = `${Date.now()}`;
