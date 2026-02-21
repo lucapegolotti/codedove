@@ -152,18 +152,8 @@ export async function startInjectionWatcher(
     await writeFile(ATTACHED_SESSION_PATH, `${latestSessionId}\n${attached.cwd}`, "utf8").catch(() => {});
   }
 
-  // Track whether any response text was actually sent to the user.
-  // Set only after delivery confirms — not before — so a session-ID mismatch
-  // (where notifyResponse returns false) doesn't suppress the "Done" ping.
-  let responseDelivered = false;
   const wrappedOnResponse = async (state: SessionResponseState) => {
-    if (onResponse) {
-      await onResponse(state);
-      responseDelivered = true;
-    } else {
-      const delivered = await notifyResponse(state);
-      if (delivered) responseDelivered = true;
-    }
+    await (onResponse ?? notifyResponse)(state);
   };
 
   log({ message: `watchForResponse started for ${latestSessionId.slice(0, 8)}, baseline=${baseline}` });
@@ -180,10 +170,7 @@ export async function startInjectionWatcher(
       activeWatcherOnComplete = null;
       onComplete?.();
       void scanForScriptImages(watchedFilePath, baseline, watcherStartTime);
-      if (!responseDelivered) {
-        // Result event fired but no text was delivered — silent task completion.
-        void sendPing("✅ Done.");
-      }
+      void sendPing("✅ Done.");
     },
     async (images: DetectedImage[]) => {
       const key = `${Date.now()}`;
