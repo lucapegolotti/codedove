@@ -179,7 +179,6 @@ export function watchForResponse(
   let done = false;
   let lastSentText: string | null = null;
   let completionScheduled = false;
-  const seenImageHashes = new Set<string>();
   const detectedImages: DetectedImage[] = [];
   // Image files written via the Write tool (detected by file extension)
   const writtenImagePaths = new Set<string>();
@@ -235,58 +234,7 @@ export function watchForResponse(
 
         // Collect images from tool_result blocks (deduplicated by tool_use_id + image index)
         if (onImages) {
-          // Build a map of tool_use_id → tool_name from assistant entries so we can
-          // skip tool_results from read-only tools (e.g. Read) that merely return
-          // existing files rather than images newly created by the session.
-          const READ_ONLY_TOOLS = new Set(["Read", "Glob", "Grep"]);
-          const toolNameById = new Map<string, string>();
-          for (const line of lines) {
-            try {
-              const entry = JSON.parse(line);
-              if (entry.type !== "assistant") continue;
-              for (const block of (entry.message?.content ?? []) as unknown[]) {
-                if (typeof block !== "object" || block === null) continue;
-                const b = block as Record<string, unknown>;
-                if (b["type"] !== "tool_use") continue;
-                toolNameById.set(b["id"] as string, b["name"] as string);
-              }
-            } catch { continue; }
-          }
-
-          for (const line of lines) {
-            try {
-              const entry = JSON.parse(line);
-              if (entry.type !== "user") continue;
-              const content: unknown[] = entry.message?.content ?? [];
-              for (const block of content) {
-                if (typeof block !== "object" || block === null) continue;
-                const b = block as Record<string, unknown>;
-                if (b["type"] !== "tool_result") continue;
-                const toolUseId = (b["tool_use_id"] as string) ?? "";
-                // Skip images returned by read-only tools — they didn't create anything
-                if (READ_ONLY_TOOLS.has(toolNameById.get(toolUseId) ?? "")) continue;
-                const inner: unknown[] = Array.isArray(b["content"]) ? b["content"] as unknown[] : [];
-                let imgIdx = 0;
-                for (const img of inner) {
-                  if (typeof img !== "object" || img === null) continue;
-                  const i = img as Record<string, unknown>;
-                  if (i["type"] !== "image") continue;
-                  const src = i["source"] as Record<string, unknown> | undefined;
-                  if (!src || src["type"] !== "base64") continue;
-                  const data = src["data"] as string;
-                  const mediaType = src["media_type"] as string;
-                  if (!data || !mediaType) continue;
-                  const key = `${toolUseId}:${imgIdx++}`;
-                  if (!seenImageHashes.has(key)) {
-                    seenImageHashes.add(key);
-                    detectedImages.push({ mediaType, data });
-                  }
-                }
-              }
-            } catch { continue; }
-          }
-
-          // Also detect image files written via the Write tool
+          // Detect image files written via the Write tool
           for (const line of lines) {
             try {
               const entry = JSON.parse(line);
