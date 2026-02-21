@@ -29,6 +29,9 @@ export type SessionResponseState = {
 
 export type ResponseCallback = (state: SessionResponseState) => Promise<void>;
 
+export type DetectedImage = { mediaType: string; data: string };
+export type ImagesCallback = (images: DetectedImage[]) => Promise<void>;
+
 const YES_NO_PATTERNS = [/\(y\/n\)/i, /\[y\/N\]/i, /confirm\?/i];
 const ENTER_PATTERNS = [/press\s+enter/i, /hit\s+enter/i];
 
@@ -164,7 +167,8 @@ export function watchForResponse(
   baselineSize: number,
   onResponse: ResponseCallback,
   onPing?: () => void,
-  onComplete?: () => void
+  onComplete?: () => void,
+  onImages?: ImagesCallback
 ): () => void {
   const parts = filePath.split("/");
   const sessionId = parts[parts.length - 1].replace(".jsonl", "");
@@ -175,6 +179,8 @@ export function watchForResponse(
   let done = false;
   let lastSentText: string | null = null;
   let completionScheduled = false;
+  const seenImageHashes = new Set<string>();
+  const detectedImages: DetectedImage[] = [];
   // Tracks an in-flight onResponse promise so the complete path can await it
   // before calling onComplete, preventing a race where two rapid chokidar events
   // cause onComplete to fire while onResponse is still awaiting the Telegram API.
@@ -222,6 +228,38 @@ export function watchForResponse(
             break;
           } catch {
             continue;
+          }
+        }
+
+        // Collect images from tool_result blocks (deduplicated by data hash prefix)
+        if (onImages) {
+          for (const line of lines) {
+            try {
+              const entry = JSON.parse(line);
+              if (entry.type !== "user") continue;
+              const content: unknown[] = entry.message?.content ?? [];
+              for (const block of content) {
+                if (typeof block !== "object" || block === null) continue;
+                const b = block as Record<string, unknown>;
+                if (b["type"] !== "tool_result") continue;
+                const inner: unknown[] = Array.isArray(b["content"]) ? b["content"] as unknown[] : [];
+                for (const img of inner) {
+                  if (typeof img !== "object" || img === null) continue;
+                  const i = img as Record<string, unknown>;
+                  if (i["type"] !== "image") continue;
+                  const src = i["source"] as Record<string, unknown> | undefined;
+                  if (!src || src["type"] !== "base64") continue;
+                  const data = src["data"] as string;
+                  const mediaType = src["media_type"] as string;
+                  if (!data || !mediaType) continue;
+                  const hash = data.slice(0, 32);
+                  if (!seenImageHashes.has(hash)) {
+                    seenImageHashes.add(hash);
+                    detectedImages.push({ mediaType, data });
+                  }
+                }
+              }
+            } catch { continue; }
           }
         }
 
@@ -284,6 +322,11 @@ export function watchForResponse(
             await pendingResponse;
             log({ message: `watchForResponse: session ${sessionId.slice(0, 8)} completed (result event)` });
             onComplete?.();
+            if (onImages && detectedImages.length > 0) {
+              await onImages(detectedImages).catch(
+                (err) => log({ message: `watchForResponse onImages error: ${err instanceof Error ? err.message : String(err)}` })
+              );
+            }
           }, 500);
           return;
         }

@@ -1,5 +1,5 @@
 import { Bot, InlineKeyboard } from "grammy";
-import { WaitingType, type SessionWaitingState, type SessionResponseState } from "../session/monitor.js";
+import { WaitingType, type SessionWaitingState, type SessionResponseState, type DetectedImage } from "../session/monitor.js";
 import type { PermissionRequest } from "../session/permissions.js";
 import { getAttachedSession } from "../session/history.js";
 import { log } from "../logger.js";
@@ -121,6 +121,21 @@ export async function notifyPermission(req: PermissionRequest): Promise<void> {
       log({ message: `failed to send permission notification: ${err instanceof Error ? err.message : String(err)}` });
     }
   }
+}
+
+export async function notifyImages(images: DetectedImage[], key: string): Promise<void> {
+  if (!registeredBot || !registeredChatId) return;
+  const n = images.length;
+  const keyboard = new InlineKeyboard();
+  if (n > 1) keyboard.text(`Send 1`, `images:send:1:${key}`);
+  if (n > 3) keyboard.text(`Send 3`, `images:send:3:${key}`);
+  keyboard.text(`Send all ${n}`, `images:send:${n}:${key}`);
+  keyboard.text("Skip", `images:skip:${key}`);
+  await registeredBot.api.sendMessage(
+    registeredChatId,
+    `📸 Found ${n} image${n === 1 ? "" : "s"} in this response. Send ${n === 1 ? "it" : "them"}?`,
+    { reply_markup: keyboard }
+  ).catch((err) => log({ message: `notifyImages error: ${err instanceof Error ? err.message : String(err)}` }));
 }
 
 export function resolveWaitingAction(callbackData: string): string | null {

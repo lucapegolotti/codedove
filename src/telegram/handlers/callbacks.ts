@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, InlineKeyboard, InputFile } from "grammy";
 import { clearChatState } from "../../agent/loop.js";
 import { log } from "../../logger.js";
 import { ATTACHED_SESSION_PATH, getAttachedSession } from "../../session/history.js";
@@ -9,6 +9,9 @@ import { pendingSessions, setLaunchedPaneId } from "./sessions.js";
 import { startInjectionWatcher } from "./text.js";
 import { writeFile, mkdir } from "fs/promises";
 import { homedir } from "os";
+import type { DetectedImage } from "../../session/monitor.js";
+
+export const pendingImages = new Map<string, DetectedImage[]>();
 
 export function registerCallbacks(bot: Bot): void {
   bot.on("callback_query:data", async (ctx) => {
@@ -168,6 +171,43 @@ export function registerCallbacks(bot: Bot): void {
       })().catch((err) => log({ message: `launch ready-poll error: ${err instanceof Error ? err.message : String(err)}` }));
 
       return;
+    }
+
+    if (data.startsWith("images:")) {
+      const parts = data.split(":");
+      const action = parts[1]; // "send" or "skip"
+      if (action === "skip") {
+        const key = parts.slice(2).join(":");
+        pendingImages.delete(key);
+        await ctx.answerCallbackQuery({ text: "Skipped." });
+        await ctx.editMessageReplyMarkup();
+        return;
+      }
+      if (action === "send") {
+        const count = parseInt(parts[2], 10);
+        const key = parts.slice(3).join(":");
+        const images = pendingImages.get(key);
+        if (!images) {
+          await ctx.answerCallbackQuery({ text: "Images no longer available." });
+          return;
+        }
+        pendingImages.delete(key);
+        await ctx.answerCallbackQuery({ text: "Sending…" });
+        await ctx.editMessageReplyMarkup();
+        const toSend = images.slice(0, count);
+        for (const img of toSend) {
+          const buf = Buffer.from(img.data, "base64");
+          const ext = img.mediaType.split("/")[1] ?? "jpg";
+          const file = new InputFile(buf, `image.${ext}`);
+          await bot.api.sendPhoto(ctx.chat!.id, file).catch(async () => {
+            // Fallback: send as document if sendPhoto fails (e.g. non-JPEG/PNG)
+            await bot.api.sendDocument(ctx.chat!.id, new InputFile(buf, `image.${ext}`)).catch((err) => {
+              log({ message: `sendPhoto/sendDocument error: ${err instanceof Error ? err.message : String(err)}` });
+            });
+          });
+        }
+        return;
+      }
     }
 
     if (data.startsWith("detach:")) {

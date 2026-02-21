@@ -3,10 +3,11 @@ import { handleTurn, clearChatState } from "../../agent/loop.js";
 import { log } from "../../logger.js";
 import { ATTACHED_SESSION_PATH, getAttachedSession, listSessions, getLatestSessionFileForCwd } from "../../session/history.js";
 import { watchForResponse, getFileSize } from "../../session/monitor.js";
-import { notifyResponse, sendPing } from "../notifications.js";
+import { notifyResponse, notifyImages, sendPing } from "../notifications.js";
 import { sendMarkdownReply } from "../utils.js";
 import { sendSessionPicker, launchedPaneId } from "./sessions.js";
-import type { SessionResponseState } from "../../session/monitor.js";
+import type { SessionResponseState, DetectedImage } from "../../session/monitor.js";
+import { pendingImages } from "./callbacks.js";
 import { writeFile, mkdir } from "fs/promises";
 import { homedir } from "os";
 
@@ -126,6 +127,11 @@ export async function startInjectionWatcher(
       } else {
         onComplete?.();
       }
+    },
+    async (images: DetectedImage[]) => {
+      const key = `${Date.now()}`;
+      pendingImages.set(key, images);
+      await notifyImages(images, key);
     }
   );
 }
