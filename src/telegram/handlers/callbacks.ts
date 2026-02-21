@@ -12,6 +12,9 @@ import { homedir } from "os";
 import type { DetectedImage } from "../../session/monitor.js";
 
 export const pendingImages = new Map<string, DetectedImage[]>();
+// Set when the user clicked "Part" — next numeric message picks that many at random
+export let pendingImageCount: { key: string; max: number } | null = null;
+export function clearPendingImageCount(): void { pendingImageCount = null; }
 
 export function registerCallbacks(bot: Bot): void {
   bot.on("callback_query:data", async (ctx) => {
@@ -175,7 +178,8 @@ export function registerCallbacks(bot: Bot): void {
 
     if (data.startsWith("images:")) {
       const parts = data.split(":");
-      const action = parts[1]; // "send" or "skip"
+      const action = parts[1];
+
       if (action === "skip") {
         const key = parts.slice(2).join(":");
         pendingImages.delete(key);
@@ -183,9 +187,22 @@ export function registerCallbacks(bot: Bot): void {
         await ctx.editMessageReplyMarkup();
         return;
       }
+
+      if (action === "part") {
+        const key = parts.slice(2).join(":");
+        const images = pendingImages.get(key);
+        if (!images) {
+          await ctx.answerCallbackQuery({ text: "Images no longer available." });
+          return;
+        }
+        pendingImageCount = { key, max: images.length };
+        await ctx.answerCallbackQuery();
+        await ctx.reply(`How many images would you like? (1–${images.length})`);
+        return;
+      }
+
       if (action === "send") {
-        const count = parseInt(parts[2], 10);
-        const key = parts.slice(3).join(":");
+        const key = parts.slice(2).join(":");
         const images = pendingImages.get(key);
         if (!images) {
           await ctx.answerCallbackQuery({ text: "Images no longer available." });
@@ -194,13 +211,11 @@ export function registerCallbacks(bot: Bot): void {
         pendingImages.delete(key);
         await ctx.answerCallbackQuery({ text: "Sending…" });
         await ctx.editMessageReplyMarkup();
-        const toSend = images.slice(0, count);
-        for (const img of toSend) {
+        for (const img of images) {
           const buf = Buffer.from(img.data, "base64");
           const ext = img.mediaType.split("/")[1] ?? "jpg";
           const file = new InputFile(buf, `image.${ext}`);
           await bot.api.sendPhoto(ctx.chat!.id, file).catch(async () => {
-            // Fallback: send as document if sendPhoto fails (e.g. non-JPEG/PNG)
             await bot.api.sendDocument(ctx.chat!.id, new InputFile(buf, `image.${ext}`)).catch((err) => {
               log({ message: `sendPhoto/sendDocument error: ${err instanceof Error ? err.message : String(err)}` });
             });

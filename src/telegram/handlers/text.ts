@@ -7,9 +7,56 @@ import { notifyResponse, notifyImages, sendPing } from "../notifications.js";
 import { sendMarkdownReply } from "../utils.js";
 import { sendSessionPicker, launchedPaneId } from "./sessions.js";
 import type { SessionResponseState, DetectedImage } from "../../session/monitor.js";
-import { pendingImages } from "./callbacks.js";
-import { writeFile, mkdir } from "fs/promises";
+import { pendingImages, pendingImageCount, clearPendingImageCount } from "./callbacks.js";
+import { InputFile } from "grammy";
+import { writeFile, mkdir, readFile } from "fs/promises";
 import { homedir } from "os";
+// After a turn completes, scan Bash tool_result outputs for image file paths.
+// When a script prints something like "/tmp/chart.png", we detect and offer it.
+async function scanForScriptImages(filePath: string, baseline: number): Promise<void> {
+  const buf = await readFile(filePath).catch(() => null);
+  if (!buf) return;
+  const lines = buf.subarray(baseline).toString("utf8").split("\n").filter(Boolean);
+  const seenPaths = new Set<string>();
+  const images: DetectedImage[] = [];
+
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line);
+      if (entry.type !== "user") continue;
+      const content: unknown[] = entry.message?.content ?? [];
+      for (const block of content) {
+        if (typeof block !== "object" || block === null) continue;
+        const b = block as Record<string, unknown>;
+        if (b["type"] !== "tool_result") continue;
+        // Only look at text tool_results (Bash stdout), not image ones
+        const text = typeof b["content"] === "string" ? b["content"] : null;
+        if (!text) continue;
+        for (const rawLine of text.split("\n")) {
+          const candidate = rawLine.trim();
+          if (/\.(png|jpg|jpeg|gif|webp)$/i.test(candidate) && !seenPaths.has(candidate)) {
+            seenPaths.add(candidate);
+            try {
+              const imgBuf = await readFile(candidate);
+              const ext = candidate.split(".").pop()!.toLowerCase();
+              const mediaType =
+                ext === "jpg" || ext === "jpeg" ? "image/jpeg" :
+                ext === "gif" ? "image/gif" :
+                ext === "webp" ? "image/webp" : "image/png";
+              images.push({ mediaType, data: imgBuf.toString("base64") });
+            } catch { /* file doesn't exist — skip */ }
+          }
+        }
+      }
+    } catch { continue; }
+  }
+
+  if (images.length > 0) {
+    const key = `${Date.now()}`;
+    pendingImages.set(key, images);
+    await notifyImages(images, key);
+  }
+}
 
 export let activeWatcherStop: (() => void) | null = null;
 export let activeWatcherOnComplete: (() => void) | null = null;
@@ -126,6 +173,7 @@ export async function startInjectionWatcher(
         void pollForPostCompactionSession(myGeneration, watchedCwd, watchedFilePath, onResponse, onComplete);
       } else {
         onComplete?.();
+        void scanForScriptImages(watchedFilePath, baseline);
       }
     },
     async (images: DetectedImage[]) => {
@@ -174,6 +222,32 @@ async function pollForPostCompactionSession(
 }
 
 export async function processTextTurn(ctx: Context, chatId: number, text: string): Promise<void> {
+  // Handle "Part" image count reply
+  if (pendingImageCount) {
+    const n = parseInt(text.trim(), 10);
+    const { key, max } = pendingImageCount;
+    if (!isNaN(n) && n >= 1 && n <= max) {
+      clearPendingImageCount();
+      const images = pendingImages.get(key);
+      if (images) {
+        pendingImages.delete(key);
+        // Shuffle and pick n at random
+        const shuffled = [...images].sort(() => Math.random() - 0.5).slice(0, n);
+        for (const img of shuffled) {
+          const buf = Buffer.from(img.data, "base64");
+          const ext = img.mediaType.split("/")[1] ?? "jpg";
+          const file = new InputFile(buf, `image.${ext}`);
+          await ctx.replyWithPhoto(file).catch(async () => {
+            await ctx.replyWithDocument(file).catch(() => {});
+          });
+        }
+      }
+      return;
+    }
+    // Not a valid number — fall through to normal message handling
+    clearPendingImageCount();
+  }
+
   const attached = await ensureSession(ctx, chatId);
   // Snapshot file position BEFORE injection — avoids missing fast responses where
   // Claude writes to the JSONL before startInjectionWatcher reads the file size.

@@ -126,11 +126,10 @@ export async function notifyPermission(req: PermissionRequest): Promise<void> {
 export async function notifyImages(images: DetectedImage[], key: string): Promise<void> {
   if (!registeredBot || !registeredChatId) return;
   const n = images.length;
-  const keyboard = new InlineKeyboard();
-  if (n > 1) keyboard.text(`Send 1`, `images:send:1:${key}`);
-  if (n > 3) keyboard.text(`Send 3`, `images:send:3:${key}`);
-  keyboard.text(`Send all ${n}`, `images:send:${n}:${key}`);
-  keyboard.text("Skip", `images:skip:${key}`);
+  const keyboard = new InlineKeyboard()
+    .text(`All (${n})`, `images:send:all:${key}`)
+    .text("Part", `images:part:${key}`)
+    .text("None", `images:skip:${key}`);
   await registeredBot.api.sendMessage(
     registeredChatId,
     `📸 Found ${n} image${n === 1 ? "" : "s"} in this response. Send ${n === 1 ? "it" : "them"}?`,
