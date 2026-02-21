@@ -152,8 +152,10 @@ export async function startInjectionWatcher(
     await writeFile(ATTACHED_SESSION_PATH, `${latestSessionId}\n${attached.cwd}`, "utf8").catch(() => {});
   }
 
+  let responseDelivered = false;
   const wrappedOnResponse = async (state: SessionResponseState) => {
     await (onResponse ?? notifyResponse)(state);
+    responseDelivered = true;
   };
 
   log({ message: `watchForResponse started for ${latestSessionId.slice(0, 8)}, baseline=${baseline}` });
@@ -167,7 +169,7 @@ export async function startInjectionWatcher(
     () => {
       activeWatcherOnComplete = null;
       onComplete?.();
-      void sendPing("✅ Done.");
+      if (!responseDelivered) void sendPing("✅ Done.");
     },
     async (images: DetectedImage[]) => {
       const key = `${Date.now()}`;
