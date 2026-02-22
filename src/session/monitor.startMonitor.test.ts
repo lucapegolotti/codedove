@@ -1,8 +1,8 @@
 /**
- * Tests for startMonitor's multiple-choice pane-capture path.
+ * Tests for startMonitor's waiting-state detection.
  *
  * We mock chokidar (so we control change events without touching the filesystem),
- * tmux (so no real terminal is needed), and fs/promises (so we return canned JSONL).
+ * and fs/promises (so we return canned JSONL).
  * Fake timers let us skip the 3-second debounce without slowing the test suite.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -26,11 +26,6 @@ vi.mock("chokidar", () => ({
   default: { watch: vi.fn(() => mockWatcher) },
 }));
 
-vi.mock("./tmux.js", () => ({
-  findClaudePane: vi.fn(),
-  capturePaneContent: vi.fn(),
-}));
-
 vi.mock("fs/promises", () => ({
   readFile: vi.fn(),
   stat: vi.fn(),
@@ -42,17 +37,14 @@ vi.mock("fs/promises", () => ({
 
 import { startMonitor, WaitingType } from "./monitor.js";
 import type { SessionWaitingState } from "./monitor.js";
-import { findClaudePane, capturePaneContent } from "./tmux.js";
 import { readFile } from "fs/promises";
 
-const PLAN_APPROVAL_PANE = [
-  "Claude has written up a plan and is ready to execute. Would you like to proceed?",
-  "> 1. Yes, clear context (21% used) and bypass permissions",
-  "  2. Yes, and bypass permissions",
-  "  3. Yes, manually approve edits",
-  "  4. Type here to tell Claude what to change",
-  "ctrl-g to edit in Vim · ~/.claude/plans/hazy-purring-fog.md",
-].join("\n");
+const HARDCODED_CHOICES = [
+  "Yes, clear context and bypass permissions",
+  "Yes, bypass permissions",
+  "Yes, manually approve edits",
+  "Type here to tell Claude what to change",
+];
 
 function makeJsonl(text: string, cwd = "/test/project"): string {
   return (
@@ -64,10 +56,53 @@ function makeJsonl(text: string, cwd = "/test/project"): string {
   );
 }
 
+function makeExitPlanModeJsonl(cwd = "/test/project"): string {
+  return (
+    JSON.stringify({
+      type: "assistant",
+      cwd,
+      message: {
+        content: [
+          { type: "tool_use", id: "toolu_exitplan", name: "ExitPlanMode", input: {} },
+        ],
+      },
+    }) + "\n"
+  );
+}
+
+function makeExitPlanModeWithPlanInputJsonl(plan: string, cwd = "/test/project"): string {
+  return (
+    JSON.stringify({
+      type: "assistant",
+      cwd,
+      message: {
+        content: [
+          { type: "tool_use", id: "toolu_exitplan", name: "ExitPlanMode", input: { plan } },
+        ],
+      },
+    }) + "\n"
+  );
+}
+
+function makeExitPlanModeWithTextJsonl(text: string, cwd = "/test/project"): string {
+  return (
+    JSON.stringify({
+      type: "assistant",
+      cwd,
+      message: {
+        content: [
+          { type: "text", text },
+          { type: "tool_use", id: "toolu_exitplan", name: "ExitPlanMode", input: {} },
+        ],
+      },
+    }) + "\n"
+  );
+}
+
 // Fake JSONL path — must end in .jsonl and live under a project directory
 const FAKE_PATH = "/home/user/.claude/projects/-test-project/abc123.jsonl";
 
-describe("startMonitor — multiple choice detection", () => {
+describe("startMonitor — waiting-state detection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
@@ -77,12 +112,8 @@ describe("startMonitor — multiple choice detection", () => {
     vi.useRealTimers();
   });
 
-  it("calls onWaiting with MULTIPLE_CHOICE when pane shows numbered choices", async () => {
-    vi.mocked(readFile).mockResolvedValue(
-      makeJsonl("❓ Claude Code needs your approval for the plan") as any
-    );
-    vi.mocked(findClaudePane).mockResolvedValue({ found: true, paneId: "%1" });
-    vi.mocked(capturePaneContent).mockResolvedValue(PLAN_APPROVAL_PANE);
+  it("fires MULTIPLE_CHOICE with hardcoded choices when ExitPlanMode entry is detected", async () => {
+    vi.mocked(readFile).mockResolvedValue(makeExitPlanModeJsonl() as any);
 
     const received: SessionWaitingState[] = [];
     const stop = startMonitor(async (state) => { received.push(state); });
@@ -94,73 +125,111 @@ describe("startMonitor — multiple choice detection", () => {
 
     expect(received).toHaveLength(1);
     expect(received[0].waitingType).toBe(WaitingType.MULTIPLE_CHOICE);
-    expect(received[0].choices).toEqual([
-      "Yes, clear context (21% used) and bypass permissions",
-      "Yes, and bypass permissions",
-      "Yes, manually approve edits",
-      "Type here to tell Claude what to change",
-    ]);
+    expect(received[0].choices).toEqual(HARDCODED_CHOICES);
   });
 
-  it("does not call onWaiting when pane has no numbered choices", async () => {
+  it("sets prompt to the accompanying text block when present", async () => {
     vi.mocked(readFile).mockResolvedValue(
-      makeJsonl("I have finished implementing the feature.") as any
-    );
-    vi.mocked(findClaudePane).mockResolvedValue({ found: true, paneId: "%1" });
-    vi.mocked(capturePaneContent).mockResolvedValue(
-      "I have finished implementing the feature.\n$ "
+      makeExitPlanModeWithTextJsonl("Here is the plan...") as any
     );
 
     const received: SessionWaitingState[] = [];
     const stop = startMonitor(async (state) => { received.push(state); });
 
-    watcherEmitter.emit("change", FAKE_PATH);
-    await vi.advanceTimersByTimeAsync(3100);
-
-    stop();
-
-    expect(received).toHaveLength(0);
-  });
-
-  it("does not call onWaiting when tmux pane is not found", async () => {
-    vi.mocked(readFile).mockResolvedValue(
-      makeJsonl("❓ Claude Code needs your approval for the plan") as any
-    );
-    vi.mocked(findClaudePane).mockResolvedValue({
-      found: false,
-      reason: "no_claude_pane",
-    });
-
-    const received: SessionWaitingState[] = [];
-    const stop = startMonitor(async (state) => { received.push(state); });
-
-    watcherEmitter.emit("change", FAKE_PATH);
-    await vi.advanceTimersByTimeAsync(3100);
-
-    stop();
-
-    expect(received).toHaveLength(0);
-  });
-
-  it("does not call onWaiting again for the same assistant text", async () => {
-    vi.mocked(readFile).mockResolvedValue(
-      makeJsonl("❓ Claude Code needs your approval for the plan") as any
-    );
-    vi.mocked(findClaudePane).mockResolvedValue({ found: true, paneId: "%1" });
-    vi.mocked(capturePaneContent).mockResolvedValue(PLAN_APPROVAL_PANE);
-
-    const received: SessionWaitingState[] = [];
-    const stop = startMonitor(async (state) => { received.push(state); });
-
-    watcherEmitter.emit("change", FAKE_PATH);
-    await vi.advanceTimersByTimeAsync(3100);
-
-    // Second change event with identical text — should be deduplicated
     watcherEmitter.emit("change", FAKE_PATH);
     await vi.advanceTimersByTimeAsync(3100);
 
     stop();
 
     expect(received).toHaveLength(1);
+    expect(received[0].waitingType).toBe(WaitingType.MULTIPLE_CHOICE);
+    expect(received[0].prompt).toBe("Here is the plan...");
+    expect(received[0].choices).toEqual(HARDCODED_CHOICES);
+  });
+
+  it("does not call onWaiting again for the same ExitPlanMode entry (dedup)", async () => {
+    vi.mocked(readFile).mockResolvedValue(makeExitPlanModeJsonl() as any);
+
+    const received: SessionWaitingState[] = [];
+    const stop = startMonitor(async (state) => { received.push(state); });
+
+    watcherEmitter.emit("change", FAKE_PATH);
+    await vi.advanceTimersByTimeAsync(3100);
+
+    // Second change event with identical content — should be deduplicated
+    watcherEmitter.emit("change", FAKE_PATH);
+    await vi.advanceTimersByTimeAsync(3100);
+
+    stop();
+
+    expect(received).toHaveLength(1);
+  });
+
+  it("does not call onWaiting for a plain text entry with no waiting pattern", async () => {
+    vi.mocked(readFile).mockResolvedValue(
+      makeJsonl("I have finished implementing the feature.") as any
+    );
+
+    const received: SessionWaitingState[] = [];
+    const stop = startMonitor(async (state) => { received.push(state); });
+
+    watcherEmitter.emit("change", FAKE_PATH);
+    await vi.advanceTimersByTimeAsync(3100);
+
+    stop();
+
+    expect(received).toHaveLength(0);
+  });
+
+  it("false-positive regression: numbered list text with no ExitPlanMode does not call onWaiting", async () => {
+    vi.mocked(readFile).mockResolvedValue(
+      makeJsonl("1. Add X\n2. Refactor Y") as any
+    );
+
+    const received: SessionWaitingState[] = [];
+    const stop = startMonitor(async (state) => { received.push(state); });
+
+    watcherEmitter.emit("change", FAKE_PATH);
+    await vi.advanceTimersByTimeAsync(3100);
+
+    stop();
+
+    expect(received).toHaveLength(0);
+  });
+
+  it("uses input.plan as prompt when ExitPlanMode has plan in input", async () => {
+    vi.mocked(readFile).mockResolvedValue(
+      makeExitPlanModeWithPlanInputJsonl("## My Plan\n1. Step one\n2. Step two") as any
+    );
+
+    const received: SessionWaitingState[] = [];
+    const stop = startMonitor(async (state) => { received.push(state); });
+
+    watcherEmitter.emit("change", FAKE_PATH);
+    await vi.advanceTimersByTimeAsync(3100);
+
+    stop();
+
+    expect(received).toHaveLength(1);
+    expect(received[0].waitingType).toBe(WaitingType.MULTIPLE_CHOICE);
+    expect(received[0].prompt).toBe("## My Plan\n1. Step one\n2. Step two");
+    expect(received[0].choices).toEqual(HARDCODED_CHOICES);
+  });
+
+  it("YES_NO pattern fires directly without ExitPlanMode", async () => {
+    vi.mocked(readFile).mockResolvedValue(
+      makeJsonl("Should I delete the file? (y/n)") as any
+    );
+
+    const received: SessionWaitingState[] = [];
+    const stop = startMonitor(async (state) => { received.push(state); });
+
+    watcherEmitter.emit("change", FAKE_PATH);
+    await vi.advanceTimersByTimeAsync(3100);
+
+    stop();
+
+    expect(received).toHaveLength(1);
+    expect(received[0].waitingType).toBe(WaitingType.YES_NO);
   });
 });

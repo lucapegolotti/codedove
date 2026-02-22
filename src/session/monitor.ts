@@ -2,7 +2,6 @@ import chokidar from "chokidar";
 import { readFile, stat } from "fs/promises";
 import { PROJECTS_PATH } from "./history.js";
 import { log } from "../logger.js";
-import { findClaudePane, capturePaneContent } from "./tmux.js";
 
 export enum WaitingType {
   YES_NO = "YES_NO",
@@ -47,46 +46,63 @@ export function classifyWaitingType(text: string): WaitingType | null {
   return null;
 }
 
-// Extract numbered choices from a tmux pane capture.
-// Matches lines like "> 1. Some option" or "  2. Another option"
-// Returns the choice labels if at least 2 are found, otherwise null.
-export function parseMultipleChoices(paneContent: string): string[] | null {
-  const matches = [...paneContent.matchAll(/^[\s>]*(\d+)\.\s+(.+)$/gm)];
-  if (matches.length < 2) return null;
-  // Verify indices are sequential starting from 1
-  const indices = matches.map((m) => parseInt(m[1], 10));
-  if (indices[0] !== 1) return null;
-  return matches.map((m) => m[2].trim());
-}
 
 function decodeProjectName(dir: string): string {
   const encoded = dir.replace(/^-/, "").replace(/-/g, "/");
   return encoded.split("/").pop() || dir;
 }
 
-async function getLastAssistantText(filePath: string): Promise<string | null> {
+export async function getLastAssistantEntry(filePath: string): Promise<{
+  text: string | null;
+  hasExitPlanMode: boolean;
+  planText: string | null;
+}> {
   try {
     const content = await readFile(filePath, "utf8");
     const lines = content.trim().split("\n").filter(Boolean);
 
+    let text: string | null = null;
+    let hasExitPlanMode = false;
+    let planText: string | null = null;
+
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
         const entry = JSON.parse(lines[i]);
+        // Stop at the user/human turn boundary
+        if (entry.type === "user") break;
         if (entry.type !== "assistant") continue;
-        const textBlocks = (entry.message?.content ?? []).filter(
-          (c: { type: string }) => c.type === "text"
-        );
-        if (textBlocks.length > 0) {
-          return textBlocks[textBlocks.length - 1].text;
+
+        const blocks: { type: string; name?: string; text?: string; input?: unknown }[] =
+          entry.message?.content ?? [];
+
+        if (!hasExitPlanMode) {
+          const exitBlock = blocks.find(
+            (c) => c.type === "tool_use" && c.name === "ExitPlanMode"
+          );
+          if (exitBlock) {
+            hasExitPlanMode = true;
+            planText = (exitBlock.input as Record<string, unknown> | undefined)?.plan as string ?? null;
+          }
         }
+
+        if (text === null) {
+          const textBlocks = blocks.filter((c) => c.type === "text");
+          if (textBlocks.length > 0) {
+            text = textBlocks[textBlocks.length - 1].text ?? null;
+          }
+        }
+
+        if (text !== null && hasExitPlanMode) break;
       } catch {
         continue;
       }
     }
+
+    return { text, hasExitPlanMode, planText };
   } catch {
     // file unreadable
   }
-  return null;
+  return { text: null, hasExitPlanMode: false, planText: null };
 }
 
 function sessionIdFromPath(filePath: string): { sessionId: string; projectDir: string } {
@@ -98,14 +114,14 @@ function sessionIdFromPath(filePath: string): { sessionId: string; projectDir: s
 
 const DEBOUNCE_MS = 3000;
 
-export function startMonitor(onWaiting: WaitingCallback): () => void {
+export function startMonitor(onWaiting: WaitingCallback, watchPath: string = PROJECTS_PATH): () => void {
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   // Track last text we notified per file to avoid duplicate notifications
   const lastNotified = new Map<string, string>();
 
   // Watch the directory directly — chokidar glob patterns don't reliably
   // fire change events on macOS for files in ~/.claude/projects subdirs.
-  const watcher = chokidar.watch(PROJECTS_PATH, {
+  const watcher = chokidar.watch(watchPath, {
     persistent: true,
     ignoreInitial: true,
     awaitWriteFinish: false,
@@ -120,12 +136,18 @@ export function startMonitor(onWaiting: WaitingCallback): () => void {
     const timer = setTimeout(async () => {
       timers.delete(filePath);
 
-      const lastText = await getLastAssistantText(filePath);
-      if (!lastText) return;
+      const { text: lastText, hasExitPlanMode, planText } = await getLastAssistantEntry(filePath);
 
-      // Skip if we already notified about this exact text
-      if (lastNotified.get(filePath) === lastText) return;
-      lastNotified.set(filePath, lastText);
+      // Dedup: for ExitPlanMode use planText as the stable key (lastText can
+      // change if more content lands in the file after the initial event,
+      // which would cause a spurious second notification with the old approach).
+      // For waiting prompts, key on the prompt text itself.
+      const dedupKey = hasExitPlanMode
+        ? `exit|${planText ?? ""}`
+        : `${lastText ?? ""}`;
+      if (lastNotified.get(filePath) === dedupKey) return;
+      // Only update dedup after we know there's something actionable
+      // (checked below) — prevents suppressing future events on no-op visits.
 
       const { sessionId, projectDir } = sessionIdFromPath(filePath);
       const projectName = decodeProjectName(projectDir);
@@ -149,38 +171,36 @@ export function startMonitor(onWaiting: WaitingCallback): () => void {
         // ignore
       }
 
-      const waitingType = classifyWaitingType(lastText);
+      const waitingType = lastText ? classifyWaitingType(lastText) : null;
 
       if (waitingType) {
-        log({ message: `session ${sessionId.slice(0, 8)} waiting (${waitingType}): ${lastText.slice(0, 80)}` });
-        await onWaiting({ sessionId, projectName, cwd, filePath, waitingType, prompt: lastText }).catch(
+        lastNotified.set(filePath, dedupKey);
+        log({ message: `session ${sessionId.slice(0, 8)} waiting (${waitingType}): ${lastText!.slice(0, 80)}` });
+        await onWaiting({ sessionId, projectName, cwd, filePath, waitingType, prompt: lastText! }).catch(
           (err) => log({ message: `notification error: ${err instanceof Error ? err.message : String(err)}` })
         );
-      } else {
-        // Try to detect a multiple-choice prompt from the terminal pane content.
-        // Claude Code's plan approval and similar UIs render numbered options that
-        // don't match the simple y/n or Enter patterns above.
-        try {
-          const pane = await findClaudePane(cwd);
-          if (pane.found) {
-            const paneText = await capturePaneContent(pane.paneId);
-            const choices = parseMultipleChoices(paneText);
-            if (choices) {
-              log({ message: `session ${sessionId.slice(0, 8)} waiting (MULTIPLE_CHOICE): ${choices.length} choices` });
-              await onWaiting({
-                sessionId, projectName, cwd, filePath,
-                waitingType: WaitingType.MULTIPLE_CHOICE,
-                prompt: lastText,
-                choices,
-              }).catch(
-                (err) => log({ message: `notification error: ${err instanceof Error ? err.message : String(err)}` })
-              );
-            }
-          }
-        } catch {
-          // tmux not available or pane not found — skip
-        }
+      } else if (hasExitPlanMode) {
+        // ExitPlanMode is detected in the JSONL — the plan approval choices are
+        // always the same fixed set, so we fire immediately without pane capture.
+        lastNotified.set(filePath, dedupKey);
+        const choices = [
+          "Yes, clear context and bypass permissions",
+          "Yes, bypass permissions",
+          "Yes, manually approve edits",
+          "Type here to tell Claude what to change",
+        ];
+        log({ message: `session ${sessionId.slice(0, 8)} ExitPlanMode detected, cwd=${cwd}` });
+        await onWaiting({
+          sessionId, projectName, cwd, filePath,
+          waitingType: WaitingType.MULTIPLE_CHOICE,
+          prompt: planText ?? lastText ?? "",
+          choices,
+        }).catch(
+          (err) => log({ message: `notification error: ${err instanceof Error ? err.message : String(err)}` })
+        );
       }
+      // else: no actionable signal — skip without updating dedup so we can
+      // react if the file is updated again with new content.
     }, DEBOUNCE_MS);
 
     timers.set(filePath, timer);

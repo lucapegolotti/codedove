@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { writeFile, appendFile, unlink } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
-import { classifyWaitingType, parseMultipleChoices, WaitingType, getFileSize, watchForResponse } from "./monitor.js";
+import { classifyWaitingType, WaitingType, getFileSize, watchForResponse, getLastAssistantEntry } from "./monitor.js";
 import type { SessionResponseState } from "./monitor.js";
 
 describe("classifyWaitingType", () => {
@@ -35,39 +35,6 @@ describe("classifyWaitingType", () => {
   });
 });
 
-describe("parseMultipleChoices", () => {
-  const PLAN_APPROVAL_PANE = `
-Claude has written up a plan and is ready to execute. Would you like to proceed?
-> 1. Yes, clear context (21% used) and bypass permissions
-  2. Yes, and bypass permissions
-  3. Yes, manually approve edits
-  4. Type here to tell Claude what to change
-ctrl-g to edit in Vim · ~/.claude/plans/hazy-purring-fog.md
-`;
-
-  it("extracts choices from a plan approval pane", () => {
-    const choices = parseMultipleChoices(PLAN_APPROVAL_PANE);
-    expect(choices).toEqual([
-      "Yes, clear context (21% used) and bypass permissions",
-      "Yes, and bypass permissions",
-      "Yes, manually approve edits",
-      "Type here to tell Claude what to change",
-    ]);
-  });
-
-  it("returns null when fewer than 2 numbered items are found", () => {
-    expect(parseMultipleChoices("Some text\n1. Only one item\nMore text")).toBeNull();
-  });
-
-  it("returns null when numbering does not start from 1", () => {
-    const text = "  2. First item\n  3. Second item\n  4. Third item";
-    expect(parseMultipleChoices(text)).toBeNull();
-  });
-
-  it("returns null for plain text with no numbered list", () => {
-    expect(parseMultipleChoices("I have updated the migration file.")).toBeNull();
-  });
-});
 
 function assistantLine(text: string, cwd = "/tmp/project"): string {
   return (
@@ -78,6 +45,109 @@ function assistantLine(text: string, cwd = "/tmp/project"): string {
     }) + "\n"
   );
 }
+
+describe("getLastAssistantEntry", () => {
+  const tmpFile = join(tmpdir(), `cv-glae-${Date.now()}.jsonl`);
+
+  afterEach(async () => {
+    await unlink(tmpFile).catch(() => {});
+  });
+
+  function exitPlanOnlyLine(cwd = "/tmp/project"): string {
+    return JSON.stringify({
+      type: "assistant",
+      cwd,
+      message: { content: [{ type: "tool_use", id: "toolu_1", name: "ExitPlanMode", input: {} }] },
+    }) + "\n";
+  }
+
+  function exitPlanWithPlanInputLine(plan: string, cwd = "/tmp/project"): string {
+    return JSON.stringify({
+      type: "assistant",
+      cwd,
+      message: { content: [{ type: "tool_use", id: "toolu_1", name: "ExitPlanMode", input: { plan } }] },
+    }) + "\n";
+  }
+
+  function exitPlanWithTextLine(text: string, cwd = "/tmp/project"): string {
+    return JSON.stringify({
+      type: "assistant",
+      cwd,
+      message: {
+        content: [
+          { type: "text", text },
+          { type: "tool_use", id: "toolu_1", name: "ExitPlanMode", input: {} },
+        ],
+      },
+    }) + "\n";
+  }
+
+  function userLine(): string {
+    return JSON.stringify({ type: "user", message: { role: "user", content: "hi" } }) + "\n";
+  }
+
+  it("returns hasExitPlanMode=true and text=null for tool_use-only ExitPlanMode entry", async () => {
+    await writeFile(tmpFile, exitPlanOnlyLine());
+    const result = await getLastAssistantEntry(tmpFile);
+    expect(result).toEqual({ text: null, hasExitPlanMode: true, planText: null });
+  });
+
+  it("returns hasExitPlanMode=true and text when entry has both text and ExitPlanMode tool_use", async () => {
+    await writeFile(tmpFile, exitPlanWithTextLine("Here is the plan..."));
+    const result = await getLastAssistantEntry(tmpFile);
+    expect(result).toEqual({ text: "Here is the plan...", hasExitPlanMode: true, planText: null });
+  });
+
+  it("returns planText from ExitPlanMode input.plan when present", async () => {
+    await writeFile(tmpFile, exitPlanWithPlanInputLine("My plan content"));
+    const result = await getLastAssistantEntry(tmpFile);
+    expect(result).toEqual({ text: null, hasExitPlanMode: true, planText: "My plan content" });
+  });
+
+  it("returns hasExitPlanMode=false and text for a plain text-only entry", async () => {
+    await writeFile(tmpFile, assistantLine("Just a normal response."));
+    const result = await getLastAssistantEntry(tmpFile);
+    expect(result).toEqual({ text: "Just a normal response.", hasExitPlanMode: false, planText: null });
+  });
+
+  it("returns defaults for an empty file", async () => {
+    await writeFile(tmpFile, "");
+    const result = await getLastAssistantEntry(tmpFile);
+    expect(result).toEqual({ text: null, hasExitPlanMode: false, planText: null });
+  });
+
+  it("returns defaults for a non-existent file", async () => {
+    const result = await getLastAssistantEntry("/tmp/definitely-does-not-exist-cv-glae.jsonl");
+    expect(result).toEqual({ text: null, hasExitPlanMode: false, planText: null });
+  });
+
+  it("scans backwards: finds text from earlier entry in same turn and ExitPlanMode from latest", async () => {
+    // Two assistant entries in the same turn (no user boundary between them):
+    // line 1 has text, line 2 has ExitPlanMode only.
+    // getLastAssistantEntry scans backwards so it picks up ExitPlanMode from line 2
+    // and text from line 1.
+    const content = assistantLine("Detailed plan text.") + exitPlanOnlyLine();
+    await writeFile(tmpFile, content);
+    const result = await getLastAssistantEntry(tmpFile);
+    expect(result).toEqual({ text: "Detailed plan text.", hasExitPlanMode: true, planText: null });
+  });
+
+  it("stops at user boundary: ExitPlanMode from previous turn is not surfaced", async () => {
+    // ExitPlanMode is in a previous turn (before a user entry).
+    // The current turn has only a plain text entry.
+    // The user boundary should stop the backwards scan, so hasExitPlanMode is false.
+    const content = exitPlanOnlyLine() + userLine() + assistantLine("Current turn text.");
+    await writeFile(tmpFile, content);
+    const result = await getLastAssistantEntry(tmpFile);
+    expect(result).toEqual({ text: "Current turn text.", hasExitPlanMode: false, planText: null });
+  });
+
+  it("returns hasExitPlanMode=false for numbered list text with no ExitPlanMode tool_use", async () => {
+    await writeFile(tmpFile, assistantLine("1. Add X\n2. Refactor Y"));
+    const result = await getLastAssistantEntry(tmpFile);
+    expect(result).toEqual({ text: "1. Add X\n2. Refactor Y", hasExitPlanMode: false, planText: null });
+  });
+});
 
 describe("getFileSize", () => {
   const tmpFile = join(tmpdir(), `cv-getfilesize-${Date.now()}.jsonl`);

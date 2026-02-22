@@ -11,11 +11,12 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdir, writeFile, appendFile, rm } from "fs/promises";
+import { mkdir, mkdtemp, writeFile, appendFile, rm } from "fs/promises";
 import { join } from "path";
+import { tmpdir } from "os";
 import { getLatestSessionFileForCwd, PROJECTS_PATH } from "./history.js";
-import { watchForResponse, getFileSize } from "./monitor.js";
-import type { SessionResponseState } from "./monitor.js";
+import { watchForResponse, getFileSize, startMonitor, WaitingType } from "./monitor.js";
+import type { SessionResponseState, SessionWaitingState } from "./monitor.js";
 import { splitAtTables } from "../telegram/utils.js";
 import { renderTableAsPng } from "../telegram/tableImage.js";
 
@@ -381,4 +382,192 @@ describe("scenario: response with table is detected and rendered as PNG", () => 
     expect(png[3]).toBe(0x47); // G
     expect(png.length).toBeGreaterThan(1000);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario: ExitPlanMode detection — real filesystem, real chokidar
+//
+// Verifies that startMonitor fires onWaiting(MULTIPLE_CHOICE) when a JSONL
+// file containing an ExitPlanMode tool_use entry is written to disk.
+// tmux is mocked so no real terminal is needed; everything else is real
+// (filesystem writes, chokidar file watching, 3-second debounce).
+// ---------------------------------------------------------------------------
+
+function exitPlanModeEntry(cwd = "/tmp/proj"): string {
+  return (
+    JSON.stringify({
+      type: "assistant",
+      cwd,
+      message: {
+        content: [{ type: "tool_use", id: "toolu_1", name: "ExitPlanMode", input: {} }],
+      },
+    }) + "\n"
+  );
+}
+
+function exitPlanModeWithPlanEntry(plan: string, cwd = "/tmp/proj"): string {
+  return (
+    JSON.stringify({
+      type: "assistant",
+      cwd,
+      message: {
+        content: [{ type: "tool_use", id: "toolu_smoke", name: "ExitPlanMode", input: { plan } }],
+      },
+    }) + "\n"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: false-positive prevention — numbered list does NOT trigger pane capture
+//
+// A regular assistant response that contains a numbered list (e.g. plan steps
+// written as plain text) must NOT cause findClaudePane to be called. Only
+// entries that contain an actual ExitPlanMode tool_use block should trigger
+// the pane-capture path in startMonitor.
+// ---------------------------------------------------------------------------
+
+describe("scenario: false-positive prevention — numbered list does not trigger onWaiting", () => {
+  let testRoot: string;
+
+  afterEach(async () => {
+    await rm(testRoot, { recursive: true, force: true });
+  });
+
+  it("numbered-list text with no ExitPlanMode does not fire onWaiting", async () => {
+    const testId = Date.now();
+    const fakeCwd = `/cv-scenario-falsepos-${testId}`;
+    const encodedCwd = fakeCwd.replace(/[^a-zA-Z0-9]/g, "-");
+    testRoot = await mkdtemp(join(tmpdir(), "cv-test-falsepos-"));
+    const projectDir = join(testRoot, encodedCwd);
+    await mkdir(projectDir, { recursive: true });
+
+    // Plain assistant entry with numbered list — no ExitPlanMode tool_use
+    const numberedListEntry =
+      JSON.stringify({
+        type: "assistant",
+        cwd: fakeCwd,
+        message: { content: [{ type: "text", text: "1. Add X\n2. Refactor Y\n3. Write tests" }] },
+      }) + "\n";
+
+    const sessionFile = join(projectDir, `session-falsepos-${testId}.jsonl`);
+    await writeFile(sessionFile, numberedListEntry);
+
+    const received: SessionWaitingState[] = [];
+    const stop = startMonitor(async (s) => { received.push(s); }, testRoot);
+
+    // Let chokidar initialize
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Trigger a change event
+    await appendFile(sessionFile, "\n");
+
+    // Wait for the 3-second debounce + buffer
+    await new Promise((r) => setTimeout(r, 3500));
+
+    stop();
+
+    expect(received).toHaveLength(0);
+  }, 10_000);
+});
+
+describe("scenario: ExitPlanMode detection — real filesystem, real chokidar", () => {
+  let testRoot: string;
+
+  afterEach(async () => {
+    await rm(testRoot, { recursive: true, force: true });
+  });
+
+  it("startMonitor fires MULTIPLE_CHOICE with hardcoded choices when ExitPlanMode entry appears on disk", async () => {
+    const testId = Date.now();
+    const fakeCwd = `/cv-scenario-exitplan-${testId}`;
+    const encodedCwd = fakeCwd.replace(/[^a-zA-Z0-9]/g, "-");
+    testRoot = await mkdtemp(join(tmpdir(), "cv-test-exitplan-"));
+    const projectDir = join(testRoot, encodedCwd);
+    await mkdir(projectDir, { recursive: true });
+
+    // Write the JSONL file with an ExitPlanMode entry before startMonitor so
+    // chokidar can pick it up on the first change event.
+    const sessionFile = join(projectDir, `session-exitplan-${testId}.jsonl`);
+    await writeFile(sessionFile, exitPlanModeEntry(fakeCwd));
+
+    const received: SessionWaitingState[] = [];
+    const stop = startMonitor(async (s) => { received.push(s); }, testRoot);
+
+    // Let chokidar initialize and register the file
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Trigger a change event that chokidar will detect
+    await appendFile(sessionFile, "\n");
+
+    // Wait for the 3-second debounce + buffer
+    await new Promise((r) => setTimeout(r, 3500));
+
+    stop();
+
+    expect(received).toHaveLength(1);
+    expect(received[0].waitingType).toBe(WaitingType.MULTIPLE_CHOICE);
+    expect(received[0].choices).toEqual([
+      "Yes, clear context and bypass permissions",
+      "Yes, bypass permissions",
+      "Yes, manually approve edits",
+      "Type here to tell Claude what to change",
+    ]);
+  }, 10_000);
+});
+
+// ---------------------------------------------------------------------------
+// Scenario: ExitPlanMode with input.plan delivers plan text as prompt
+//
+// Smoke test for the bug where ExitPlanMode sent an empty `prompt` to Telegram
+// because the plan text lives in `input.plan` of the tool_use block, not in a
+// text block. Verifies that startMonitor fires onWaiting with prompt equal to
+// the plan text from input.plan.
+// ---------------------------------------------------------------------------
+
+describe("scenario: ExitPlanMode with input.plan delivers plan text as prompt (real filesystem)", () => {
+  const HARDCODED_CHOICES = [
+    "Yes, clear context and bypass permissions",
+    "Yes, bypass permissions",
+    "Yes, manually approve edits",
+    "Type here to tell Claude what to change",
+  ];
+
+  let testRoot: string;
+
+  afterEach(async () => {
+    await rm(testRoot, { recursive: true, force: true });
+  });
+
+  it("startMonitor fires MULTIPLE_CHOICE with prompt equal to input.plan text", async () => {
+    const testId = Date.now();
+    const fakeCwd = `/cv-scenario-plantext-${testId}`;
+    const encodedCwd = fakeCwd.replace(/[^a-zA-Z0-9]/g, "-");
+    testRoot = await mkdtemp(join(tmpdir(), "cv-test-plantext-"));
+    const projectDir = join(testRoot, encodedCwd);
+    await mkdir(projectDir, { recursive: true });
+
+    const PLAN_TEXT = "## Smoke plan\n1. Step A\n2. Step B";
+
+    const sessionFile = join(projectDir, `session-plantext-${testId}.jsonl`);
+    await writeFile(sessionFile, exitPlanModeWithPlanEntry(PLAN_TEXT, fakeCwd));
+
+    const received: SessionWaitingState[] = [];
+    const stop = startMonitor(async (s) => { received.push(s); }, testRoot);
+
+    // Let chokidar initialize and register the file
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Trigger a change event
+    await appendFile(sessionFile, "\n");
+
+    // Wait for the 3-second debounce + buffer
+    await new Promise((r) => setTimeout(r, 3500));
+
+    stop();
+
+    expect(received).toHaveLength(1);
+    expect(received[0].waitingType).toBe(WaitingType.MULTIPLE_CHOICE);
+    expect(received[0].prompt).toBe(PLAN_TEXT);
+    expect(received[0].choices).toEqual(HARDCODED_CHOICES);
+  }, 10_000);
 });
