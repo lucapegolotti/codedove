@@ -207,6 +207,14 @@ describe("notifyResponse", () => {
 
     expect(mockBot.api.sendMessage).not.toHaveBeenCalled();
   });
+
+  it("skips plan approval text to avoid a buttonless duplicate before notifyWaiting fires", async () => {
+    vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "session-abc", cwd: "/proj" });
+
+    await notifyResponse(makeState({ text: "❓ Claude Code needs your approval for the plan" }));
+
+    expect(mockBot.api.sendMessage).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

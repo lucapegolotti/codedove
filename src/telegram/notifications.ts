@@ -66,7 +66,9 @@ function buildWaitingKeyboard(waitingType: WaitingType, choices?: string[]): Inl
 export async function notifyWaiting(state: SessionWaitingState): Promise<void> {
   if (!registeredBot || !registeredChatId) return;
 
-  const prompt = state.prompt.slice(0, 200);
+  const prompt = state.prompt.length > 2000
+    ? state.prompt.slice(0, 2000) + "…"
+    : state.prompt;
   const text = `⚠️ Claude is waiting in \`${state.projectName}\`:\n\n_"${prompt}"_`;
   const keyboard = buildWaitingKeyboard(state.waitingType, state.choices);
 
@@ -81,8 +83,13 @@ export async function notifyWaiting(state: SessionWaitingState): Promise<void> {
   }
 }
 
+// Plan approval text is handled by notifyWaiting — skip here to avoid sending
+// a buttonless duplicate before the proper waiting notification arrives.
+const PLAN_APPROVAL_RE = /needs your approval for the plan/i;
+
 export async function notifyResponse(state: SessionResponseState): Promise<void> {
   if (!registeredBot || !registeredChatId) return;
+  if (PLAN_APPROVAL_RE.test(state.text)) return;
 
   // Only notify for the attached session to avoid spam from other projects
   const attached = await getAttachedSession().catch(() => null);
