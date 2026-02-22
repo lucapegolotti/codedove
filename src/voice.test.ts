@@ -25,7 +25,7 @@ vi.mock("openai", () => {
   return { default: MockOpenAI };
 });
 
-import { polishTranscript } from "./voice.js";
+import { polishTranscript, sanitizeForTts } from "./voice.js";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -63,5 +63,19 @@ describe("polishTranscript", () => {
 
     const result = await polishTranscript("some raw input");
     expect(result).toBe("some raw input");
+  });
+});
+
+describe("sanitizeForTts", () => {
+  it("strips trailing colon", () => {
+    expect(sanitizeForTts("Here is the result:")).toBe("Here is the result");
+  });
+
+  it("preserves mid-text colons and semicolons", () => {
+    expect(sanitizeForTts("step one; step two: done")).toBe("step one; step two: done");
+  });
+
+  it("leaves text without trailing colon unchanged", () => {
+    expect(sanitizeForTts("all good here")).toBe("all good here");
   });
 });

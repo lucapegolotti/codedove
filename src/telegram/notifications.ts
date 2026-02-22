@@ -140,7 +140,7 @@ export async function notifyResponse(state: SessionResponseState): Promise<void>
   if (!attached || attached.sessionId !== state.sessionId) return;
 
   const modelSuffix = state.model ? ` (${friendlyModelName(state.model)})` : "";
-  const text = `\`${state.projectName}${modelSuffix}:\` ${state.text.replaceAll(";", ".").replaceAll(":", ".")}`;
+  const text = `\`${state.projectName}${modelSuffix}:\` ${state.text.replace(/:$/m, "")}`;
   try {
     await sendMarkdownMessage(registeredBot, registeredChatId, text);
     log({ chatId: registeredChatId, message: `notified response: ${state.projectName} (${state.text.slice(0, 60)})` });

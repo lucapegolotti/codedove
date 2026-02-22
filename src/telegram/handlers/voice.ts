@@ -1,7 +1,7 @@
 import { Context, InputFile } from "grammy";
 import { handleTurn } from "../../agent/loop.js";
 import { log } from "../../logger.js";
-import { transcribeAudio, synthesizeSpeech, polishTranscript } from "../../voice.js";
+import { transcribeAudio, synthesizeSpeech, polishTranscript, sanitizeForTts } from "../../voice.js";
 import { narrate } from "../../narrator.js";
 import { sendMarkdownReply } from "../utils.js";
 import { sendSessionPicker, launchedPaneId } from "./sessions.js";
@@ -62,7 +62,7 @@ export async function handleVoice(ctx: Context, chatId: number, token: string): 
 
       const voiceResponseHandler = async (state: SessionResponseState) => {
         // Stream each text block to chat immediately as it arrives
-        await sendMarkdownReply(ctx, `\`[claude-code][${state.projectName}]\` ${state.text.replaceAll(";", ".").replaceAll(":", ".")}`).catch((err) => {
+        await sendMarkdownReply(ctx, `\`[claude-code][${state.projectName}]\` ${state.text.replace(/:$/m, "")}`).catch((err) => {
           log({ chatId, message: `stream text error: ${err instanceof Error ? err.message : String(err)}` });
         });
         log({ chatId, direction: "out", message: `[stream] ${state.text.slice(0, 80)}` });
@@ -73,7 +73,7 @@ export async function handleVoice(ctx: Context, chatId: number, token: string): 
         clearInterval(typingInterval);
         if (allBlocks.length === 0) return;
         narrate(allBlocks.join("\n\n"), polished)
-          .then((summary) => synthesizeSpeech(summary).then((audio) => {
+          .then((summary) => synthesizeSpeech(sanitizeForTts(summary)).then((audio) => {
             ctx.replyWithVoice(new InputFile(audio, "reply.mp3"));
             log({ chatId, direction: "out", message: `[voice response] ${summary.slice(0, 80)}` });
           }))
@@ -90,6 +90,6 @@ export async function handleVoice(ctx: Context, chatId: number, token: string): 
   }
 
   log({ chatId, direction: "out", message: reply });
-  const audioReply = await synthesizeSpeech(reply);
+  const audioReply = await synthesizeSpeech(sanitizeForTts(reply));
   await ctx.replyWithVoice(new InputFile(audioReply, "reply.mp3"));
 }

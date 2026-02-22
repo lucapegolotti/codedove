@@ -20,6 +20,12 @@ export async function transcribeAudio(audioBuffer: Buffer, filename: string): Pr
   return transcription.text;
 }
 
+/** Sanitize text for TTS playback — strip trailing colons that cause
+ *  robotic pronunciation artifacts in OpenAI TTS. */
+export function sanitizeForTts(text: string): string {
+  return text.replace(/:$/m, "");
+}
+
 export async function synthesizeSpeech(text: string): Promise<Buffer> {
   const response = await getOpenAI().audio.speech.create({
     model: "tts-1",

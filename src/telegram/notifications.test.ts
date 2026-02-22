@@ -150,14 +150,14 @@ describe("notifyResponse", () => {
     ...overrides,
   });
 
-  it("replaces semicolons with periods in the response text", async () => {
+  it("preserves colons and semicolons in middle of text, strips trailing colon", async () => {
     vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "session-abc", cwd: "/proj" });
 
-    await notifyResponse(makeState({ text: "Step one; step two; done" }));
+    await notifyResponse(makeState({ text: "Step one; step two: done" }));
 
     expect(mockBot.api.sendMessage).toHaveBeenCalledWith(
       chatId,
-      expect.stringContaining("Step one. step two. done"),
+      expect.stringContaining("Step one; step two: done"),
       expect.anything()
     );
   });

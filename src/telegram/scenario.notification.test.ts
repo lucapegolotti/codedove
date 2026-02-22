@@ -110,7 +110,7 @@ describe("scenario: JSONL write → watchForResponse → notifyResponse → Tele
     // Must start with a backtick-quoted project-name prefix
     expect(sentText).toMatch(/^`[^`]+:`/);
 
-    // Both `:` and `;` must be replaced with `.`
-    expect(sentText).toContain("Step one. done. step two. done");
+    // Colons and semicolons are preserved (TTS sanitization moved to voice layer)
+    expect(sentText).toContain("Step one: done; step two: done");
   }, 8_000);
 });
