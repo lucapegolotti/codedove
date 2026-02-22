@@ -6,7 +6,7 @@ import { findClaudePane, injectInput, sendKeysToPane, sendRawKeyToPane, launchCl
 import { resolveWaitingAction } from "../notifications.js";
 import { respondToPermission } from "../../session/permissions.js";
 import { pendingSessions, setLaunchedPaneId } from "./sessions.js";
-import { startInjectionWatcher } from "./text.js";
+import { startInjectionWatcher, snapshotBaseline } from "./text.js";
 import { writeFile, mkdir } from "fs/promises";
 import { homedir } from "os";
 import type { DetectedImage } from "../../session/monitor.js";
@@ -33,11 +33,15 @@ export function registerCallbacks(bot: Bot): void {
       if (input !== null) {
         const attached = await getAttachedSession();
         if (attached) {
+          // Snapshot baseline BEFORE injection — same race-free pattern as processTextTurn.
+          // Without this, Claude can write text to the JSONL before startInjectionWatcher
+          // establishes its baseline, causing watchForResponse to miss the entire response.
+          const preBaseline = await snapshotBaseline(attached.cwd);
           const result = await injectInput(attached.cwd, input);
           if (result.found) {
             await ctx.answerCallbackQuery({ text: "Sent!" });
             await ctx.reply(`Sent "${input || "↩"}". Claude is resuming.`);
-            await startInjectionWatcher(attached, ctx.chat!.id, undefined, undefined);
+            await startInjectionWatcher(attached, ctx.chat!.id, undefined, undefined, preBaseline);
           } else {
             await ctx.answerCallbackQuery({ text: "Could not find tmux pane." });
           }
