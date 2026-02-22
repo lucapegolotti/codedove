@@ -85,6 +85,21 @@ export class NotificationService {
     }
   }
 
+  /** Send an SDK-mode response — skips session ID check since the SDK manages the session. */
+  async sendSdkResponse(text: string, projectName: string, model?: string): Promise<void> {
+    if (!this.bot || !this.chatId) return;
+    if (PLAN_APPROVAL_RE.test(text)) return;
+
+    const modelSuffix = model ? ` (${friendlyModelName(model)})` : "";
+    const formatted = `\`${projectName}${modelSuffix}:\` ${text.replace(/:$/m, "")}`;
+    try {
+      await sendMarkdownMessage(this.bot, this.chatId, formatted);
+      log({ chatId: this.chatId, message: `SDK response: ${projectName} (${text.slice(0, 60)})` });
+    } catch (err) {
+      log({ message: `failed to send SDK response: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
   async notifyPermission(req: PermissionRequest): Promise<void> {
     if (!this.bot || !this.chatId) return;
 

@@ -4,6 +4,7 @@ import { loadConfig } from "./config/config.js";
 import { startMonitor } from "./session/monitor.js";
 import { watchPermissionRequests } from "./session/permissions.js";
 import { notifyWaiting, sendStartupMessage, notifyPermission } from "./telegram/notifications.js";
+import { initSdkMode } from "./telegram/handlers/text.js";
 import { existsSync } from "fs";
 import { writeFile, mkdir } from "fs/promises";
 import { homedir } from "os";
@@ -25,6 +26,7 @@ for (const key of required) {
 
 const token = process.env.TELEGRAM_BOT_TOKEN!;
 const config = await loadConfig();
+initSdkMode({ useAgentSdk: config.useAgentSdk ?? false });
 const bot = createBot(token, config.allowedChatId);
 bot.catch(console.error);
 
@@ -33,21 +35,25 @@ mkdir(join(homedir(), ".codewhispr"), { recursive: true })
   .then(() => writeFile(join(homedir(), ".codewhispr", "bot-token"), token, { mode: 0o600 }))
   .catch((err) => console.error("Failed to write bot-token:", err));
 
-// Start session monitor — watches all Claude JSONL files for waiting state
-const stopMonitor = startMonitor(notifyWaiting);
-
-// Start permission request watcher
-const stopPermissionWatcher = watchPermissionRequests(notifyPermission);
+// In tmux mode, start file watchers for JSONL-based detection.
+// In SDK mode, the Agent SDK handles turn completion and permissions via callbacks,
+// so these watchers are unnecessary.
+let stopMonitor: (() => void) | null = null;
+let stopPermissionWatcher: (() => void) | null = null;
+if (!config.useAgentSdk) {
+  stopMonitor = startMonitor(notifyWaiting);
+  stopPermissionWatcher = watchPermissionRequests(notifyPermission);
+}
 
 // Graceful shutdown
 process.on("SIGINT", () => {
-  stopMonitor();
-  stopPermissionWatcher();
+  stopMonitor?.();
+  stopPermissionWatcher?.();
   process.exit(0);
 });
 process.on("SIGTERM", () => {
-  stopMonitor();
-  stopPermissionWatcher();
+  stopMonitor?.();
+  stopPermissionWatcher?.();
   process.exit(0);
 });
 

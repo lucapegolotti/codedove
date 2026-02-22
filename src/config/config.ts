@@ -5,6 +5,8 @@ import { join, dirname } from "path";
 export type BotConfig = {
   reposFolder: string;
   allowedChatId?: number;
+  /** Use the Claude Agent SDK instead of tmux+hooks. Default: false. */
+  useAgentSdk?: boolean;
 };
 
 export const DEFAULT_CONFIG_PATH = join(homedir(), ".codewhispr", "config.json");
