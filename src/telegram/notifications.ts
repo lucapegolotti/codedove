@@ -11,20 +11,154 @@ import { sendMarkdownMessage } from "./utils.js";
 const CODEWHISPR_DIR = join(homedir(), ".codewhispr");
 const CHAT_ID_PATH = join(CODEWHISPR_DIR, "chat-id");
 
-let registeredBot: Bot | null = null;
-let registeredChatId: number | null = null;
+// Plan approval text is handled by notifyWaiting — skip here to avoid sending
+// a buttonless duplicate before the proper waiting notification arrives.
+const PLAN_APPROVAL_RE = /needs your approval for the plan/i;
 
-export async function sendPing(text: string): Promise<void> {
-  if (!registeredBot || !registeredChatId) return;
-  await registeredBot.api.sendMessage(registeredChatId, text).catch(() => {});
+function buildWaitingKeyboard(waitingType: WaitingType, choices?: string[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  if (waitingType === WaitingType.YES_NO) {
+    kb.text("Yes", "waiting:yes").text("No", "waiting:no").row();
+  } else if (waitingType === WaitingType.ENTER) {
+    kb.text("Continue ↩", "waiting:enter").row();
+  } else if (waitingType === WaitingType.MULTIPLE_CHOICE && choices) {
+    for (let i = 0; i < choices.length; i++) {
+      const label = choices[i].length > 40 ? choices[i].slice(0, 38) + "…" : choices[i];
+      kb.text(`${i + 1}. ${label}`, `waiting:choice:${i + 1}`).row();
+    }
+  }
+  kb.text("Send custom input", "waiting:custom").text("Ignore", "waiting:ignore");
+  return kb;
 }
 
+export class NotificationService {
+  private bot: Bot | null = null;
+  private chatId: number | null = null;
+
+  register(bot: Bot, chatId: number): void {
+    this.bot = bot;
+    this.chatId = chatId;
+    mkdir(CODEWHISPR_DIR, { recursive: true })
+      .then(() => writeFile(CHAT_ID_PATH, String(chatId), "utf8"))
+      .catch(() => {});
+  }
+
+  async sendPing(text: string): Promise<void> {
+    if (!this.bot || !this.chatId) return;
+    await this.bot.api.sendMessage(this.chatId, text).catch(() => {});
+  }
+
+  async notifyWaiting(state: SessionWaitingState): Promise<void> {
+    if (!this.bot || !this.chatId) return;
+
+    const keyboard = buildWaitingKeyboard(state.waitingType, state.choices);
+
+    try {
+      if (state.prompt) {
+        await sendMarkdownMessage(this.bot, this.chatId, state.prompt);
+      }
+      const header = `⚠️ Claude is waiting in \`${state.projectName}\`:`;
+      await this.bot.api.sendMessage(this.chatId, header, {
+        parse_mode: "Markdown",
+        reply_markup: keyboard,
+      });
+      log({ chatId: this.chatId, message: `notified: ${state.projectName} waiting (${state.waitingType})` });
+    } catch (err) {
+      log({ message: `failed to send waiting notification: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
+  async notifyResponse(state: SessionResponseState): Promise<void> {
+    if (!this.bot || !this.chatId) return;
+    if (PLAN_APPROVAL_RE.test(state.text)) return;
+
+    const attached = await getAttachedSession().catch(() => null);
+    if (!attached || attached.sessionId !== state.sessionId) return;
+
+    const modelSuffix = state.model ? ` (${friendlyModelName(state.model)})` : "";
+    const text = `\`${state.projectName}${modelSuffix}:\` ${state.text.replace(/:$/m, "")}`;
+    try {
+      await sendMarkdownMessage(this.bot, this.chatId, text);
+      log({ chatId: this.chatId, message: `notified response: ${state.projectName} (${state.text.slice(0, 60)})` });
+    } catch (err) {
+      log({ message: `failed to send response notification: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
+  async notifyPermission(req: PermissionRequest): Promise<void> {
+    if (!this.bot || !this.chatId) return;
+
+    const commandLine = req.toolName === "Bash" && req.toolCommand
+      ? `\n\`\`\`\n${req.toolCommand}\n\`\`\``
+      : "";
+    const text = `🔐 *Claude needs your permission to use ${req.toolName}*${commandLine}`;
+    const keyboard = new InlineKeyboard()
+      .text("Yes", `perm:approve:${req.requestId}`)
+      .text("No", `perm:deny:${req.requestId}`);
+
+    try {
+      await this.bot.api.sendMessage(this.chatId, text, {
+        parse_mode: "Markdown",
+        reply_markup: keyboard,
+      });
+      log({ chatId: this.chatId, message: `permission notification: ${req.toolName} (${req.requestId.slice(0, 8)})` });
+    } catch {
+      try {
+        await this.bot.api.sendMessage(
+          this.chatId,
+          req.toolInput,
+          { reply_markup: keyboard }
+        );
+      } catch (err) {
+        log({ message: `failed to send permission notification: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+  }
+
+  async notifyImages(images: DetectedImage[], key: string): Promise<void> {
+    if (!this.bot || !this.chatId) return;
+    const n = images.length;
+    const keyboard = new InlineKeyboard()
+      .text(`All (${n})`, `images:send:all:${key}`)
+      .text("Part", `images:part:${key}`)
+      .text("None", `images:skip:${key}`);
+    await this.bot.api.sendMessage(
+      this.chatId,
+      `📸 Found ${n} image${n === 1 ? "" : "s"} in this response. Send ${n === 1 ? "it" : "them"}?`,
+      { reply_markup: keyboard }
+    ).catch((err) => log({ message: `notifyImages error: ${err instanceof Error ? err.message : String(err)}` }));
+  }
+}
+
+// Singleton instance
+export const notifications = new NotificationService();
+
+// ---------------------------------------------------------------------------
+// Module-level exports — thin wrappers for backwards compatibility
+// ---------------------------------------------------------------------------
+
 export function registerForNotifications(bot: Bot, chatId: number): void {
-  registeredBot = bot;
-  registeredChatId = chatId;
-  mkdir(CODEWHISPR_DIR, { recursive: true })
-    .then(() => writeFile(CHAT_ID_PATH, String(chatId), "utf8"))
-    .catch(() => {});
+  notifications.register(bot, chatId);
+}
+
+export async function sendPing(text: string): Promise<void> {
+  return notifications.sendPing(text);
+}
+
+export async function notifyWaiting(state: SessionWaitingState): Promise<void> {
+  return notifications.notifyWaiting(state);
+}
+
+export async function notifyResponse(state: SessionResponseState): Promise<void> {
+  return notifications.notifyResponse(state);
+}
+
+export async function notifyPermission(req: PermissionRequest): Promise<void> {
+  return notifications.notifyPermission(req);
+}
+
+export async function notifyImages(images: DetectedImage[], key: string): Promise<void> {
+  return notifications.notifyImages(images, key);
 }
 
 export async function sendStartupMessage(bot: Bot): Promise<void> {
@@ -47,66 +181,13 @@ export async function sendStartupMessage(bot: Bot): Promise<void> {
   }
 }
 
-function buildWaitingKeyboard(waitingType: WaitingType, choices?: string[]): InlineKeyboard {
-  const kb = new InlineKeyboard();
-  if (waitingType === WaitingType.YES_NO) {
-    kb.text("Yes", "waiting:yes").text("No", "waiting:no").row();
-  } else if (waitingType === WaitingType.ENTER) {
-    kb.text("Continue ↩", "waiting:enter").row();
-  } else if (waitingType === WaitingType.MULTIPLE_CHOICE && choices) {
-    for (let i = 0; i < choices.length; i++) {
-      const label = choices[i].length > 40 ? choices[i].slice(0, 38) + "…" : choices[i];
-      kb.text(`${i + 1}. ${label}`, `waiting:choice:${i + 1}`).row();
-    }
-  }
-  kb.text("Send custom input", "waiting:custom").text("Ignore", "waiting:ignore");
-  return kb;
-}
-
-export async function notifyWaiting(state: SessionWaitingState): Promise<void> {
-  if (!registeredBot || !registeredChatId) return;
-
-  const keyboard = buildWaitingKeyboard(state.waitingType, state.choices);
-
-  try {
-    if (state.prompt) {
-      await sendMarkdownMessage(registeredBot, registeredChatId, state.prompt);
-    }
-    const header = `⚠️ Claude is waiting in \`${state.projectName}\`:`;
-    await registeredBot.api.sendMessage(registeredChatId, header, {
-      parse_mode: "Markdown",
-      reply_markup: keyboard,
-    });
-    log({ chatId: registeredChatId, message: `notified: ${state.projectName} waiting (${state.waitingType})` });
-  } catch (err) {
-    log({ message: `failed to send waiting notification: ${err instanceof Error ? err.message : String(err)}` });
-  }
-}
-
-// Plan approval text is handled by notifyWaiting — skip here to avoid sending
-// a buttonless duplicate before the proper waiting notification arrives.
-const PLAN_APPROVAL_RE = /needs your approval for the plan/i;
-
 /**
  * Convert a model ID to a compact friendly name.
- *
- * Strategy: strip "claude-" prefix, split on "-", separate the alphabetic
- * family tokens from trailing numeric/date tokens, then join the numeric
- * parts with "." and drop any ≥8-digit date suffix.
- *
- * Examples:
- *   "claude-opus-4-6"            → "opus 4.6"
- *   "claude-sonnet-4-6"          → "sonnet 4.6"
- *   "claude-haiku-4-5-20251001"  → "haiku 4.5"
- *   "claude-super-nova-5-2"      → "super-nova 5.2"
- *   "some-future-model-7"        → "some-future-model 7"
- *   (unknown format)             → returned as-is minus "claude-" prefix
  */
 export function friendlyModelName(modelId: string): string {
   const bare = modelId.replace(/^claude-/, "");
   const parts = bare.split("-");
 
-  // Walk from the end: collect numeric tokens (digits only), stop at first non-numeric
   const nameParts: string[] = [];
   const versionParts: string[] = [];
   let seenNumeric = false;
@@ -121,7 +202,6 @@ export function friendlyModelName(modelId: string): string {
   }
   if (!seenNumeric) return bare;
 
-  // Drop trailing date-like token (≥8 digits, e.g. "20251001")
   if (versionParts.length > 0 && versionParts[versionParts.length - 1].length >= 8) {
     versionParts.pop();
   }
@@ -129,69 +209,6 @@ export function friendlyModelName(modelId: string): string {
   const name = nameParts.join("-");
   const version = versionParts.join(".");
   return version ? `${name} ${version}` : name;
-}
-
-export async function notifyResponse(state: SessionResponseState): Promise<void> {
-  if (!registeredBot || !registeredChatId) return;
-  if (PLAN_APPROVAL_RE.test(state.text)) return;
-
-  // Only notify for the attached session to avoid spam from other projects
-  const attached = await getAttachedSession().catch(() => null);
-  if (!attached || attached.sessionId !== state.sessionId) return;
-
-  const modelSuffix = state.model ? ` (${friendlyModelName(state.model)})` : "";
-  const text = `\`${state.projectName}${modelSuffix}:\` ${state.text.replace(/:$/m, "")}`;
-  try {
-    await sendMarkdownMessage(registeredBot, registeredChatId, text);
-    log({ chatId: registeredChatId, message: `notified response: ${state.projectName} (${state.text.slice(0, 60)})` });
-  } catch (err) {
-    log({ message: `failed to send response notification: ${err instanceof Error ? err.message : String(err)}` });
-  }
-}
-
-export async function notifyPermission(req: PermissionRequest): Promise<void> {
-  if (!registeredBot || !registeredChatId) return;
-
-  // Only show the command for Bash — other tools (Task, etc.) produce verbose JSON
-  const commandLine = req.toolName === "Bash" && req.toolCommand
-    ? `\n\`\`\`\n${req.toolCommand}\n\`\`\``
-    : "";
-  const text = `🔐 *Claude needs your permission to use ${req.toolName}*${commandLine}`;
-  const keyboard = new InlineKeyboard()
-    .text("Yes", `perm:approve:${req.requestId}`)
-    .text("No", `perm:deny:${req.requestId}`);
-
-  try {
-    await registeredBot.api.sendMessage(registeredChatId, text, {
-      parse_mode: "Markdown",
-      reply_markup: keyboard,
-    });
-    log({ chatId: registeredChatId, message: `permission notification: ${req.toolName} (${req.requestId.slice(0, 8)})` });
-  } catch {
-    try {
-      await registeredBot.api.sendMessage(
-        registeredChatId,
-        req.toolInput,
-        { reply_markup: keyboard }
-      );
-    } catch (err) {
-      log({ message: `failed to send permission notification: ${err instanceof Error ? err.message : String(err)}` });
-    }
-  }
-}
-
-export async function notifyImages(images: DetectedImage[], key: string): Promise<void> {
-  if (!registeredBot || !registeredChatId) return;
-  const n = images.length;
-  const keyboard = new InlineKeyboard()
-    .text(`All (${n})`, `images:send:all:${key}`)
-    .text("Part", `images:part:${key}`)
-    .text("None", `images:skip:${key}`);
-  await registeredBot.api.sendMessage(
-    registeredChatId,
-    `📸 Found ${n} image${n === 1 ? "" : "s"} in this response. Send ${n === 1 ? "it" : "them"}?`,
-    { reply_markup: keyboard }
-  ).catch((err) => log({ message: `notifyImages error: ${err instanceof Error ? err.message : String(err)}` }));
 }
 
 export function resolveWaitingAction(callbackData: string): string | null {
