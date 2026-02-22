@@ -9,6 +9,8 @@ import { registerCallbacks } from "./handlers/callbacks/index.js";
 import { registerForNotifications } from "./notifications.js";
 import { log } from "../logger.js";
 
+export { clearChatState } from "../agent/loop.js";
+
 export function createBot(token: string, allowedChatId?: number): Bot {
   const bot = new Bot(token);
   applyAllowlistMiddleware(bot, allowedChatId);

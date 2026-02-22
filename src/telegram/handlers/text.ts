@@ -1,53 +1,21 @@
 import { Context } from "grammy";
-import { SessionManager } from "../../agent/session-manager.js";
-import { injectInput, findClaudePane, sendInterrupt } from "../../session/tmux.js";
+import { handleTurn, clearChatState } from "../../agent/loop.js";
 import { log } from "../../logger.js";
 import { ATTACHED_SESSION_PATH, getAttachedSession, listSessions, getLatestSessionFileForCwd } from "../../session/history.js";
 import { watchForResponse, getFileSize } from "../../session/monitor.js";
 import { notifyResponse, notifyImages, sendPing } from "../notifications.js";
 import { sendMarkdownReply } from "../utils.js";
-import { launchedPaneId } from "./sessions.js";
+import { sendSessionPicker, launchedPaneId } from "./sessions.js";
+import { findClaudePane, sendInterrupt } from "../../session/tmux.js";
 import type { SessionResponseState, DetectedImage } from "../../session/monitor.js";
 import { pendingImages, pendingImageCount, clearPendingImageCount } from "./callbacks/index.js";
 import { InputFile } from "grammy";
 import { writeFile, mkdir, readFile } from "fs/promises";
 import { homedir } from "os";
 import { WatcherManager } from "../../session/watcher-manager.js";
-import { notifications } from "../notifications.js";
 
-// Singleton watcher manager — used in tmux mode
+// Singleton watcher manager — shared with commands.ts via re-exports
 export const watcherManager = new WatcherManager(pendingImages);
-
-// SDK session manager — initialized via initSdkMode()
-let sessionManager: SessionManager | null = null;
-
-/**
- * Initialize SDK mode. Call from index.ts after loading config.
- * When SDK mode is active, processTextTurn uses the Agent SDK instead of tmux.
- */
-export function initSdkMode(config: { useAgentSdk: boolean; model?: string }): void {
-  if (!config.useAgentSdk) return;
-
-  sessionManager = new SessionManager({
-    useAgentSdk: true,
-    model: config.model,
-    callbacks: {
-      onAssistantText: async (text, model) => {
-        const attached = sessionManager?.attached;
-        const projectName = attached ? attached.cwd.split("/").pop() ?? "" : "";
-        await notifications.sendSdkResponse(text, projectName, model);
-      },
-      onComplete: (result) => {
-        log({ message: `SDK turn complete: ${result.durationMs}ms, $${result.costUsd.toFixed(4)}` });
-      },
-    },
-  });
-}
-
-/** Get the session manager (for commands.ts, etc.) */
-export function getSessionManager(): SessionManager | null {
-  return sessionManager;
-}
 
 // Re-export for backwards compatibility with existing consumers
 export const snapshotBaseline = (cwd: string) => watcherManager.snapshotBaseline(cwd);
@@ -117,22 +85,6 @@ export async function ensureSession(
   ctx: Context,
   chatId: number
 ): Promise<{ sessionId: string; cwd: string } | null> {
-  // SDK mode: use SessionManager.autoAttach
-  if (sessionManager?.isSdkMode) {
-    const attached = await sessionManager.autoAttach();
-    if (attached) {
-      // If we just auto-attached, notify the user
-      const prev = sessionManager.attached;
-      if (!prev || prev.sessionId !== attached.sessionId) {
-        const projectName = attached.cwd.split("/").pop() ?? "";
-        await ctx.reply(`Auto-attached to \`${projectName}\`.`, { parse_mode: "Markdown" });
-      }
-      return attached;
-    }
-    return null;
-  }
-
-  // tmux mode: existing logic
   const existing = await getAttachedSession();
   if (existing) return existing;
 
@@ -142,6 +94,7 @@ export async function ensureSession(
   const s = recent[0];
   await mkdir(`${homedir()}/.codewhispr`, { recursive: true });
   await writeFile(ATTACHED_SESSION_PATH, `${s.sessionId}\n${s.cwd}`, "utf8");
+  clearChatState(chatId);
   await ctx.reply(`Auto-attached to \`${s.projectName}\`.`, { parse_mode: "Markdown" });
   return { sessionId: s.sessionId, cwd: s.cwd };
 }
@@ -176,66 +129,43 @@ export async function processTextTurn(ctx: Context, chatId: number, text: string
 
   const attached = await ensureSession(ctx, chatId);
 
-  // SDK mode: send message via Agent SDK — blocks until turn completes
-  if (sessionManager?.isSdkMode) {
-    if (!attached) {
-      await sendMarkdownReply(ctx, "No session found. Use /sessions to pick one.");
-      return;
+  // If Claude is currently processing (active watcher), interrupt it with Ctrl+C
+  // so the new message takes effect immediately instead of queuing after the current turn.
+  if (watcherManager.isActive && attached) {
+    const pane = await findClaudePane(attached.cwd);
+    if (pane.found) {
+      log({ message: `Interrupting Claude Code (Ctrl+C) for new message` });
+      // Stop old watcher first so it doesn't process the interrupt's result event
+      watcherManager.stopAndFlush();
+      await sendInterrupt(pane.paneId);
+      // Wait for Claude to write interrupted state to JSONL before snapshotting baseline
+      await new Promise((r) => setTimeout(r, 600));
     }
+  }
 
-    // Interrupt current turn if the SDK is actively processing
-    if (sessionManager.isActive) {
-      log({ message: `Interrupting SDK turn for new message` });
-      await sessionManager.interrupt();
-    }
+  // Snapshot file position BEFORE injection — avoids missing fast responses where
+  // Claude writes to the JSONL before startInjectionWatcher reads the file size.
+  const preBaseline = attached ? await watcherManager.snapshotBaseline(attached.cwd) : null;
+  const reply = await handleTurn(chatId, text, undefined, attached?.cwd, launchedPaneId);
 
+  if (reply === "__SESSION_PICKER__") {
+    await sendSessionPicker(ctx);
+    return;
+  }
+
+  if (reply === "__INJECTED__") {
     await ctx.replyWithChatAction("typing");
     const typingInterval = setInterval(() => {
       ctx.replyWithChatAction("typing").catch(() => {});
     }, 4000);
-
-    try {
-      const result = await sessionManager.sendMessage(text);
-      if (!result.injected && "reason" in result) {
-        await sendMarkdownReply(ctx, result.reason);
-      }
-    } finally {
+    if (attached) {
+      await watcherManager.startInjectionWatcher(attached, chatId, undefined, () => clearInterval(typingInterval), preBaseline);
+    } else {
       clearInterval(typingInterval);
     }
     return;
   }
 
-  // tmux mode: existing flow
-  if (watcherManager.isActive && attached) {
-    const pane = await findClaudePane(attached.cwd);
-    if (pane.found) {
-      log({ message: `Interrupting Claude Code (Ctrl+C) for new message` });
-      watcherManager.stopAndFlush();
-      await sendInterrupt(pane.paneId);
-      await new Promise((r) => setTimeout(r, 600));
-    }
-  }
-
-  if (!attached) {
-    await sendMarkdownReply(ctx, "No session attached. Use /sessions to pick one.");
-    return;
-  }
-
-  const preBaseline = await watcherManager.snapshotBaseline(attached.cwd);
-
-  log({ chatId, message: `inject: ${text.slice(0, 80)}` });
-  const result = await injectInput(attached.cwd, text, launchedPaneId);
-
-  if (!result.found) {
-    const msg = "No Claude Code running at this session. Start it, or use /sessions to switch.";
-    log({ chatId, direction: "out", message: msg });
-    await sendMarkdownReply(ctx, msg);
-    return;
-  }
-
-  await ctx.replyWithChatAction("typing");
-  const typingInterval = setInterval(() => {
-    ctx.replyWithChatAction("typing").catch(() => {});
-  }, 4000);
-  await watcherManager.startInjectionWatcher(attached, chatId, undefined, () => clearInterval(typingInterval), preBaseline);
+  log({ chatId, direction: "out", message: reply });
+  await sendMarkdownReply(ctx, reply);
 }
