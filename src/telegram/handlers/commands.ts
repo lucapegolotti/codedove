@@ -11,6 +11,8 @@ import { unlink, writeFile, mkdir } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 import { access } from "fs/promises";
+import { spawn } from "child_process";
+import { isServiceInstalled } from "../../service/index.js";
 
 const POLISH_VOICE_OFF_PATH = join(homedir(), ".codewhispr", "polish-voice-off");
 
@@ -211,10 +213,24 @@ export function registerCommands(bot: Bot): void {
   });
 
   bot.command("restart", async (ctx) => {
-    // Send the reply and give Telegram a moment to deliver it, then exit.
-    // launchd's KeepAlive will restart the service automatically.
     await ctx.reply("Restarting…").catch(() => {});
-    setTimeout(() => process.exit(0), 500);
+    const serviceInstalled = await isServiceInstalled().catch(() => false);
+    if (serviceInstalled) {
+      // Service manager (launchd/systemd) will revive the process automatically.
+      setTimeout(() => process.exit(0), 500);
+    } else {
+      // Running manually — spawn a fresh copy then exit so Telegram polling
+      // doesn't conflict. The 1 s delay lets the current getUpdates request
+      // expire before the new process starts polling.
+      const child = spawn(process.argv[0], process.argv.slice(1), {
+        detached: true,
+        stdio: "ignore",
+        cwd: process.cwd(),
+        env: process.env,
+      });
+      child.unref();
+      setTimeout(() => process.exit(0), 1000);
+    }
   });
 
   const escMd = (s: string) => s.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, "\\$&");

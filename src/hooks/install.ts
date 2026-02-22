@@ -46,16 +46,9 @@ m = re.search(r'permission to use (\\w+)', msg)
 print(m.group(1) if m else '')
 " 2>/dev/null || echo "")
 
-# Not a tool permission request (e.g. a clarifying question) — notify via Telegram and pass through.
+# Not a tool permission request (e.g. a plan approval prompt) — ignored here.
+# These messages arrive via the normal JSONL text path.
 if [ -z "$TOOL_NAME" ]; then
-  MSG=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('message',''))" 2>/dev/null)
-  TOKEN=$(cat "$CODEWHISPR_DIR/bot-token" 2>/dev/null)
-  CHAT_ID=$(cat "$CODEWHISPR_DIR/chat-id" 2>/dev/null)
-  if [ -n "$TOKEN" ] && [ -n "$CHAT_ID" ] && [ -n "$MSG" ]; then
-    curl -s -X POST "https://api.telegram.org/bot\${TOKEN}/sendMessage" \\
-      --data-urlencode "chat_id=\${CHAT_ID}" \\
-      --data-urlencode "text=❓ \${MSG}" > /dev/null 2>&1
-  fi
   exit 0
 fi
 
