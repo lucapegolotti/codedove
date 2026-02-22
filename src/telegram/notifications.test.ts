@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { sendStartupMessage, registerForNotifications, notifyResponse, notifyPermission, notifyWaiting, resolveWaitingAction } from "./notifications.js";
+import { sendStartupMessage, registerForNotifications, notifyResponse, notifyPermission, notifyWaiting, resolveWaitingAction, friendlyModelName } from "./notifications.js";
 import { WaitingType } from "../session/monitor.js";
 import { splitMessage } from "./utils.js";
 
@@ -434,5 +434,26 @@ describe("notifyWaiting with MULTIPLE_CHOICE", () => {
     const allButtons = keyboard.flat();
     expect(allButtons.find((b) => b.callback_data === "waiting:custom")).toBeDefined();
     expect(allButtons.find((b) => b.callback_data === "waiting:ignore")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// friendlyModelName
+// ---------------------------------------------------------------------------
+
+describe("friendlyModelName", () => {
+  it.each([
+    ["claude-opus-4-6", "opus 4.6"],
+    ["claude-sonnet-4-6", "sonnet 4.6"],
+    ["claude-haiku-4-5-20251001", "haiku 4.5"],
+    ["claude-haiku-4-5", "haiku 4.5"],
+    ["claude-opus-5-0", "opus 5.0"],
+    ["claude-super-nova-5-2", "super-nova 5.2"],
+    ["claude-foo-10-3-20260101", "foo 10.3"],
+    ["some-other-model-7", "some-other-model 7"],
+    ["claude-opus", "opus"],
+    ["totally-unknown", "totally-unknown"],
+  ])("%s → %s", (input, expected) => {
+    expect(friendlyModelName(input)).toBe(expected);
   });
 });

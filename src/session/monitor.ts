@@ -27,6 +27,7 @@ export type SessionResponseState = {
   cwd: string;
   filePath: string;
   text: string;
+  model?: string;
 };
 
 export type ResponseCallback = (state: SessionResponseState) => Promise<void>;
@@ -273,6 +274,7 @@ export function watchForResponse(
         // Find the latest assistant text written so far
         let latestText: string | null = null;
         let latestCwd = cwd;
+        let latestModel: string | undefined;
         for (let i = lines.length - 1; i >= 0; i--) {
           try {
             const entry = JSON.parse(lines[i]);
@@ -285,6 +287,7 @@ export function watchForResponse(
             if (!text.trim()) continue;
             latestText = text;
             if (entry.cwd) latestCwd = entry.cwd;
+            if (entry.message?.model) latestModel = entry.message.model;
             break;
           } catch {
             continue;
@@ -331,7 +334,7 @@ export function watchForResponse(
           if (latestText && latestText !== lastSentText) {
             lastSentText = latestText;
             log({ message: `watchForResponse firing for session ${sessionId.slice(0, 8)}: ${latestText.slice(0, 60)}` });
-            pendingResponse = onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText }).catch(
+            pendingResponse = onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText, model: latestModel }).catch(
               (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
             );
             await pendingResponse;
@@ -346,6 +349,7 @@ export function watchForResponse(
               const finalLines = finalBuf.subarray(baselineSize).toString("utf8").split("\n").filter(Boolean);
               let finalText: string | null = null;
               let finalCwd = cwd;
+              let finalModel: string | undefined;
               for (let i = finalLines.length - 1; i >= 0; i--) {
                 try {
                   const entry = JSON.parse(finalLines[i]);
@@ -358,13 +362,14 @@ export function watchForResponse(
                   if (!text.trim()) continue;
                   finalText = text;
                   if (entry.cwd) finalCwd = entry.cwd;
+                  if (entry.message?.model) finalModel = entry.message.model;
                   break;
                 } catch { continue; }
               }
               if (finalText && finalText !== lastSentText) {
                 lastSentText = finalText;
                 log({ message: `watchForResponse final-flush for session ${sessionId.slice(0, 8)}: ${finalText.slice(0, 60)}` });
-                await onResponse({ sessionId, projectName, cwd: finalCwd, filePath, text: finalText }).catch(
+                await onResponse({ sessionId, projectName, cwd: finalCwd, filePath, text: finalText, model: finalModel }).catch(
                   (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
                 );
               }
@@ -401,7 +406,7 @@ export function watchForResponse(
         // Fire immediately — no debounce needed since the Stop hook signals completion
         lastSentText = latestText;
         log({ message: `watchForResponse firing for session ${sessionId.slice(0, 8)}: ${latestText.slice(0, 60)}` });
-        pendingResponse = onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText }).catch(
+        pendingResponse = onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText, model: latestModel }).catch(
           (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
         );
         await pendingResponse;

@@ -87,6 +87,50 @@ export async function notifyWaiting(state: SessionWaitingState): Promise<void> {
 // a buttonless duplicate before the proper waiting notification arrives.
 const PLAN_APPROVAL_RE = /needs your approval for the plan/i;
 
+/**
+ * Convert a model ID to a compact friendly name.
+ *
+ * Strategy: strip "claude-" prefix, split on "-", separate the alphabetic
+ * family tokens from trailing numeric/date tokens, then join the numeric
+ * parts with "." and drop any ≥8-digit date suffix.
+ *
+ * Examples:
+ *   "claude-opus-4-6"            → "opus 4.6"
+ *   "claude-sonnet-4-6"          → "sonnet 4.6"
+ *   "claude-haiku-4-5-20251001"  → "haiku 4.5"
+ *   "claude-super-nova-5-2"      → "super-nova 5.2"
+ *   "some-future-model-7"        → "some-future-model 7"
+ *   (unknown format)             → returned as-is minus "claude-" prefix
+ */
+export function friendlyModelName(modelId: string): string {
+  const bare = modelId.replace(/^claude-/, "");
+  const parts = bare.split("-");
+
+  // Walk from the end: collect numeric tokens (digits only), stop at first non-numeric
+  const nameParts: string[] = [];
+  const versionParts: string[] = [];
+  let seenNumeric = false;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (/^\d+$/.test(parts[i])) {
+      versionParts.unshift(parts[i]);
+      seenNumeric = true;
+    } else {
+      nameParts.unshift(...parts.slice(0, i + 1));
+      break;
+    }
+  }
+  if (!seenNumeric) return bare;
+
+  // Drop trailing date-like token (≥8 digits, e.g. "20251001")
+  if (versionParts.length > 0 && versionParts[versionParts.length - 1].length >= 8) {
+    versionParts.pop();
+  }
+
+  const name = nameParts.join("-");
+  const version = versionParts.join(".");
+  return version ? `${name} ${version}` : name;
+}
+
 export async function notifyResponse(state: SessionResponseState): Promise<void> {
   if (!registeredBot || !registeredChatId) return;
   if (PLAN_APPROVAL_RE.test(state.text)) return;
@@ -95,7 +139,8 @@ export async function notifyResponse(state: SessionResponseState): Promise<void>
   const attached = await getAttachedSession().catch(() => null);
   if (!attached || attached.sessionId !== state.sessionId) return;
 
-  const text = `\`${state.projectName}:\` ${state.text.replaceAll(";", ".").replaceAll(":", ".")}`;
+  const modelSuffix = state.model ? ` (${friendlyModelName(state.model)})` : "";
+  const text = `\`${state.projectName}${modelSuffix}:\` ${state.text.replaceAll(";", ".").replaceAll(":", ".")}`;
   try {
     await sendMarkdownMessage(registeredBot, registeredChatId, text);
     log({ chatId: registeredChatId, message: `notified response: ${state.projectName} (${state.text.slice(0, 60)})` });
