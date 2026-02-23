@@ -8,6 +8,24 @@ Send a message from Telegram. Claude Code runs on your Mac. You get the response
 
 codewhispr is a Telegram bot that acts as a remote interface for [Claude Code](https://claude.ai/code) sessions running in tmux on your machine. You can type or speak commands, receive responses as text or audio, approve tool permissions from your phone, and manage multiple Claude Code sessions from a single Telegram chat.
 
+## Features
+
+- **Text, voice, and image input** — type a message, send a voice note, or share a photo. Everything gets injected into Claude Code.
+- **Response forwarding** — Claude's responses are forwarded to Telegram as formatted Markdown messages with the repo name and model shown.
+- **Voice notes** — voice messages are transcribed (Whisper), optionally polished (Haiku), and Claude's reply is narrated back as a voice note (OpenAI TTS).
+- **Image support** — photos and image files are saved locally and referenced in Claude Code. Use `/images` to retrieve images Claude created.
+- **Table rendering** — Markdown tables are rendered as PNG images since Telegram doesn't support table formatting.
+- **Permission approval** — when Claude needs to run a tool, you get an inline keyboard with Approve/Deny buttons.
+- **Plan approval** — multiple-choice prompts and plan approvals are forwarded with inline buttons.
+- **Interrupt on new message** — sending a new message while Claude is working sends Ctrl+C to interrupt, then injects your message.
+- **Session management** — attach, detach, and switch between multiple Claude Code sessions running in tmux.
+- **Model switching** — use `/model` to change the active Claude model from a picker of available models.
+- **Recurring timer** — `/timer` sets up a prompt that auto-injects every N minutes, with response notifications.
+- **Session summarization** — `/summarize` reads the session JSONL and produces a concise summary.
+- **Context management** — `/clear` and `/compact` manage Claude Code's context window.
+- **Auto-restart** — runs as a launchd (macOS) or systemd (Linux) service; `/restart` restarts the bot.
+- **Voice polish toggle** — `/polishvoice` toggles whether voice transcripts are cleaned up before injection.
+
 ## Prerequisites
 
 - macOS or Linux (uses launchd on macOS, systemd on Linux)
@@ -86,6 +104,10 @@ When Claude Code needs your approval to run a command, you get a Telegram notifi
 | `/summarize` | Summarise the current Claude Code session |
 | `/compact` | Trigger `/compact` in Claude Code |
 | `/clear` | Clear Claude Code context |
+| `/escape` | Send Escape to cancel Claude's current action |
+| `/model` | Switch Claude Code model |
+| `/images` | Ask Claude Code for image files it created |
+| `/timer` | Set a recurring prompt on a schedule (run again to stop) |
 | `/close_session` | Kill the Claude Code tmux window |
 | `/polishvoice` | Toggle voice transcript polishing on/off |
 | `/restart` | Restart the bot process |
@@ -175,7 +197,7 @@ Voice notes (OGG) are transcribed with OpenAI Whisper, optionally cleaned up by 
 | Narrator / Voice polish | Claude Haiku (`claude-haiku-4-5-20251001`) |
 | TUI | [Ink](https://github.com/vadimdemedes/ink) (React for terminals) |
 | Runtime | Node.js + TypeScript (`tsx`) |
-| Service | macOS launchd |
+| Service | macOS launchd / Linux systemd |
 
 ---
 
