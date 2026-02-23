@@ -12,20 +12,23 @@ vi.mock("@anthropic-ai/sdk", () => {
   return { default: MockAnthropic };
 });
 
-// Also mock openai so voice.ts can be imported without OPENAI_API_KEY
+// Shared mocks for OpenAI audio methods
+const mockTranscriptionCreate = vi.fn();
+const mockSpeechCreate = vi.fn();
+
 vi.mock("openai", () => {
   function MockOpenAI() {
     return {
       audio: {
-        transcriptions: { create: vi.fn() },
-        speech: { create: vi.fn() },
+        transcriptions: { create: mockTranscriptionCreate },
+        speech: { create: mockSpeechCreate },
       },
     };
   }
   return { default: MockOpenAI };
 });
 
-import { polishTranscript, sanitizeForTts } from "./voice.js";
+import { polishTranscript, sanitizeForTts, transcribeAudio, synthesizeSpeech } from "./voice.js";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -77,5 +80,57 @@ describe("sanitizeForTts", () => {
 
   it("leaves text without trailing colon unchanged", () => {
     expect(sanitizeForTts("all good here")).toBe("all good here");
+  });
+});
+
+describe("transcribeAudio", () => {
+  it("returns transcription text from OpenAI", async () => {
+    mockTranscriptionCreate.mockResolvedValue({ text: "hello world" });
+
+    const result = await transcribeAudio(Buffer.from("audio-data"), "voice.ogg");
+    expect(result).toBe("hello world");
+  });
+
+  it("passes correct filename and model", async () => {
+    mockTranscriptionCreate.mockResolvedValue({ text: "test" });
+
+    await transcribeAudio(Buffer.from("data"), "recording.ogg");
+    expect(mockTranscriptionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "whisper-1",
+        file: expect.any(File),
+      })
+    );
+    const callArg = mockTranscriptionCreate.mock.calls[0][0];
+    expect(callArg.file.name).toBe("recording.ogg");
+  });
+});
+
+describe("synthesizeSpeech", () => {
+  it("returns Buffer from speech API", async () => {
+    const fakeArrayBuffer = new ArrayBuffer(4);
+    new Uint8Array(fakeArrayBuffer).set([1, 2, 3, 4]);
+    mockSpeechCreate.mockResolvedValue({
+      arrayBuffer: () => Promise.resolve(fakeArrayBuffer),
+    });
+
+    const result = await synthesizeSpeech("Hello there");
+    expect(Buffer.isBuffer(result)).toBe(true);
+    expect(result).toEqual(Buffer.from([1, 2, 3, 4]));
+  });
+
+  it("passes correct model and voice", async () => {
+    mockSpeechCreate.mockResolvedValue({
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+    });
+
+    await synthesizeSpeech("Some text");
+    expect(mockSpeechCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "tts-1",
+        voice: "nova",
+        input: "Some text",
+      })
+    );
   });
 });

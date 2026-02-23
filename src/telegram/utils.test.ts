@@ -1,5 +1,28 @@
-import { describe, it, expect } from "vitest";
-import { splitMessage, splitAtTables } from "./utils.js";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { splitMessage, splitAtTables, sendMarkdownReply, sendMarkdownMessage } from "./utils.js";
+
+// Mock tableImage — renderTableAsPng returns a small Buffer by default
+const mockRenderTableAsPng = vi.fn();
+vi.mock("./tableImage.js", () => ({
+  renderTableAsPng: (...args: unknown[]) => mockRenderTableAsPng(...args),
+}));
+
+vi.mock("../logger.js", () => ({
+  log: vi.fn(),
+}));
+
+// Mock grammy InputFile — just pass through the buffer
+vi.mock("grammy", async () => {
+  const actual = await vi.importActual("grammy");
+  return {
+    ...actual,
+    InputFile: class InputFile {
+      constructor(public data: unknown, public filename?: string) {}
+    },
+  };
+});
+
+beforeEach(() => vi.clearAllMocks());
 
 describe("splitMessage", () => {
   it("returns single chunk when text fits within limit", () => {
@@ -65,5 +88,92 @@ describe("splitAtTables", () => {
     const parts = splitAtTables(input);
     expect(parts).toHaveLength(1);
     expect(parts[0].type).toBe("table");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sendMarkdownReply
+// ---------------------------------------------------------------------------
+
+describe("sendMarkdownReply", () => {
+  function makeCtx() {
+    return {
+      reply: vi.fn().mockResolvedValue(undefined),
+      replyWithPhoto: vi.fn().mockResolvedValue(undefined),
+    } as any;
+  }
+
+  it("sends plain text with Markdown parse_mode", async () => {
+    const ctx = makeCtx();
+    await sendMarkdownReply(ctx, "Hello world");
+    expect(ctx.reply).toHaveBeenCalledWith("Hello world", { parse_mode: "Markdown" });
+  });
+
+  it("renders table as PNG and sends photo", async () => {
+    const ctx = makeCtx();
+    const pngBuf = Buffer.from("fake-png");
+    mockRenderTableAsPng.mockReturnValue(pngBuf);
+
+    await sendMarkdownReply(ctx, "| A | B |\n|---|---|\n| 1 | 2 |");
+    expect(mockRenderTableAsPng).toHaveBeenCalled();
+    expect(ctx.replyWithPhoto).toHaveBeenCalled();
+    // Should NOT have sent text for the table part
+    expect(ctx.reply).not.toHaveBeenCalled();
+  });
+
+  it("falls back to plain text when Markdown parse fails", async () => {
+    const ctx = makeCtx();
+    // First call with Markdown fails, second without parse_mode succeeds
+    ctx.reply
+      .mockRejectedValueOnce(new Error("parse error"))
+      .mockResolvedValue(undefined);
+
+    await sendMarkdownReply(ctx, "bad *markdown");
+    expect(ctx.reply).toHaveBeenCalledTimes(2);
+    // Second call should be without parse_mode
+    expect(ctx.reply.mock.calls[1]).toEqual(["bad *markdown"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sendMarkdownMessage
+// ---------------------------------------------------------------------------
+
+describe("sendMarkdownMessage", () => {
+  function makeBot() {
+    return {
+      api: {
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        sendPhoto: vi.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+  }
+
+  it("sends plain text with Markdown parse_mode via bot.api", async () => {
+    const bot = makeBot();
+    await sendMarkdownMessage(bot, 12345, "Hello world");
+    expect(bot.api.sendMessage).toHaveBeenCalledWith(12345, "Hello world", { parse_mode: "Markdown" });
+  });
+
+  it("renders table as PNG and sends photo via bot.api", async () => {
+    const bot = makeBot();
+    const pngBuf = Buffer.from("fake-png");
+    mockRenderTableAsPng.mockReturnValue(pngBuf);
+
+    await sendMarkdownMessage(bot, 12345, "| A | B |\n|---|---|\n| 1 | 2 |");
+    expect(mockRenderTableAsPng).toHaveBeenCalled();
+    expect(bot.api.sendPhoto).toHaveBeenCalled();
+    expect(bot.api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("falls back to plain text when Markdown parse fails", async () => {
+    const bot = makeBot();
+    bot.api.sendMessage
+      .mockRejectedValueOnce(new Error("parse error"))
+      .mockResolvedValue(undefined);
+
+    await sendMarkdownMessage(bot, 12345, "bad *markdown");
+    expect(bot.api.sendMessage).toHaveBeenCalledTimes(2);
+    expect(bot.api.sendMessage.mock.calls[1]).toEqual([12345, "bad *markdown"]);
   });
 });

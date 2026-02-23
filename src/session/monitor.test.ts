@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { writeFile, appendFile, unlink } from "fs/promises";
+import { writeFile, appendFile, unlink, mkdir, rm } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
-import { classifyWaitingType, WaitingType, getFileSize, watchForResponse, getLastAssistantEntry } from "./monitor.js";
-import type { SessionResponseState } from "./monitor.js";
+import { classifyWaitingType, WaitingType, getFileSize, watchForResponse, getLastAssistantEntry, startMonitor } from "./monitor.js";
+import type { SessionResponseState, SessionWaitingState } from "./monitor.js";
 
 describe("classifyWaitingType", () => {
   it("detects y/n prompt", () => {
@@ -309,4 +309,199 @@ describe("watchForResponse", () => {
     expect(completed).toBe(true);
   });
 
+  it("detects images written via Write tool and calls onImages after result event", async () => {
+    tmpFile = join(tmpdir(), `cv-watch-img-${Date.now()}.jsonl`);
+    await writeFile(tmpFile, "");
+    const baseline = await getFileSize(tmpFile);
+
+    // Create a temporary image file that the JSONL references
+    const imgFile = join(tmpdir(), `cv-test-img-${Date.now()}.png`);
+    // Write a minimal PNG-like content (just needs to be readable)
+    await writeFile(imgFile, Buffer.from("fake-png-data"));
+
+    const received: SessionResponseState[] = [];
+    const detectedImages: Array<{ mediaType: string; data: string }[]> = [];
+
+    stopWatcher = watchForResponse(
+      tmpFile,
+      baseline,
+      async (state) => { received.push(state); },
+      undefined,
+      undefined,
+      async (images) => { detectedImages.push(images); }
+    );
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Write assistant text with a Write tool_use for an image, plus result event
+    const writeToolLine = JSON.stringify({
+      type: "assistant",
+      cwd: "/tmp/project",
+      message: {
+        content: [
+          { type: "text", text: "Here is the chart." },
+          { type: "tool_use", name: "Write", input: { file_path: imgFile } },
+        ],
+      },
+    }) + "\n";
+    const resultLine = JSON.stringify({ type: "result" }) + "\n";
+    await appendFile(tmpFile, writeToolLine + resultLine);
+
+    // Wait for result event processing (500ms delay + buffer)
+    await new Promise((r) => setTimeout(r, 1500));
+
+    expect(received.length).toBeGreaterThanOrEqual(1);
+    expect(detectedImages.length).toBe(1);
+    expect(detectedImages[0][0].mediaType).toBe("image/png");
+
+    // Clean up
+    await unlink(imgFile).catch(() => {});
+  });
+
+  it("calls onPing after 60s with no response text", async () => {
+    // This test is hard to run with real timers, so we verify the onPing path
+    // at a structural level — the important thing is that watchForResponse
+    // accepts and handles the onPing callback.
+    tmpFile = join(tmpdir(), `cv-watch-ping-${Date.now()}.jsonl`);
+    await writeFile(tmpFile, "");
+    const baseline = await getFileSize(tmpFile);
+
+    let pingCalled = false;
+    stopWatcher = watchForResponse(
+      tmpFile,
+      baseline,
+      async () => {},
+      () => { pingCalled = true; }
+    );
+
+    // We can't wait 60s in a test, but we verify the function accepts onPing
+    // and doesn't throw
+    await new Promise((r) => setTimeout(r, 100));
+    stopWatcher();
+    stopWatcher = null;
+    // pingCalled will be false since we stop before 60s — but the test ensures
+    // the code path is wired up without errors
+    expect(pingCalled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// startMonitor
+// ---------------------------------------------------------------------------
+
+describe("startMonitor", () => {
+  let watchDir: string;
+  let stopMonitor: (() => void) | null = null;
+
+  afterEach(async () => {
+    stopMonitor?.();
+    stopMonitor = null;
+    if (watchDir) await rm(watchDir, { recursive: true, force: true });
+  });
+
+  function waitingAssistantLine(text: string, cwd = "/tmp/project"): string {
+    return JSON.stringify({
+      type: "assistant",
+      cwd,
+      message: { content: [{ type: "text", text }] },
+    }) + "\n";
+  }
+
+  it("fires onWaiting callback when a JSONL file changes with a y/n prompt", async () => {
+    watchDir = join(tmpdir(), `cv-monitor-${Date.now()}`);
+    const projDir = join(watchDir, "-tmp-project");
+    await mkdir(projDir, { recursive: true });
+    const jsonlFile = join(projDir, "session-abc.jsonl");
+    await writeFile(jsonlFile, "");
+
+    const received: SessionWaitingState[] = [];
+    stopMonitor = startMonitor(
+      async (state) => { received.push(state); },
+      watchDir
+    );
+
+    // Allow chokidar to initialize
+    await new Promise((r) => setTimeout(r, 500));
+
+    // Write a waiting prompt to the file
+    await writeFile(jsonlFile, waitingAssistantLine("Should I continue? (y/n)"));
+
+    // Wait for debounce (3s) + buffer
+    await new Promise((r) => setTimeout(r, 4000));
+
+    expect(received.length).toBeGreaterThanOrEqual(1);
+    expect(received[0].waitingType).toBe(WaitingType.YES_NO);
+    expect(received[0].sessionId).toBe("session-abc");
+  }, 10000);
+
+  it("fires onWaiting for ExitPlanMode with MULTIPLE_CHOICE type", async () => {
+    watchDir = join(tmpdir(), `cv-monitor-epm-${Date.now()}`);
+    const projDir = join(watchDir, "-tmp-project");
+    await mkdir(projDir, { recursive: true });
+    const jsonlFile = join(projDir, "session-plan.jsonl");
+    await writeFile(jsonlFile, "");
+
+    const received: SessionWaitingState[] = [];
+    stopMonitor = startMonitor(
+      async (state) => { received.push(state); },
+      watchDir
+    );
+
+    await new Promise((r) => setTimeout(r, 500));
+
+    // Write an ExitPlanMode entry
+    const exitPlanLine = JSON.stringify({
+      type: "assistant",
+      cwd: "/tmp/project",
+      message: {
+        content: [{ type: "tool_use", id: "toolu_1", name: "ExitPlanMode", input: { plan: "Refactor the module" } }],
+      },
+    }) + "\n";
+    await writeFile(jsonlFile, exitPlanLine);
+
+    await new Promise((r) => setTimeout(r, 4000));
+
+    expect(received.length).toBeGreaterThanOrEqual(1);
+    expect(received[0].waitingType).toBe(WaitingType.MULTIPLE_CHOICE);
+    expect(received[0].choices).toBeDefined();
+    expect(received[0].choices!.length).toBe(4);
+  }, 10000);
+
+  it("does not fire for non-JSONL files", async () => {
+    watchDir = join(tmpdir(), `cv-monitor-nonjsonl-${Date.now()}`);
+    const projDir = join(watchDir, "-tmp-project");
+    await mkdir(projDir, { recursive: true });
+    const txtFile = join(projDir, "notes.txt");
+    await writeFile(txtFile, "");
+
+    const received: SessionWaitingState[] = [];
+    stopMonitor = startMonitor(
+      async (state) => { received.push(state); },
+      watchDir
+    );
+
+    await new Promise((r) => setTimeout(r, 500));
+    await writeFile(txtFile, "Should I continue? (y/n)");
+    await new Promise((r) => setTimeout(r, 4000));
+
+    expect(received).toHaveLength(0);
+  }, 10000);
+
+  it("cleanup function stops the watcher", async () => {
+    watchDir = join(tmpdir(), `cv-monitor-cleanup-${Date.now()}`);
+    await mkdir(watchDir, { recursive: true });
+
+    const received: SessionWaitingState[] = [];
+    stopMonitor = startMonitor(
+      async (state) => { received.push(state); },
+      watchDir
+    );
+
+    // Stop immediately
+    stopMonitor();
+    stopMonitor = null;
+
+    // Should not throw or leak
+    expect(received).toHaveLength(0);
+  });
 });

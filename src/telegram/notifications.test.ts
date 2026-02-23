@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { sendStartupMessage, registerForNotifications, notifyResponse, notifyPermission, notifyWaiting, resolveWaitingAction, friendlyModelName } from "./notifications.js";
+import { sendStartupMessage, registerForNotifications, notifyResponse, notifyPermission, notifyWaiting, notifyImages, sendPing, resolveWaitingAction, friendlyModelName } from "./notifications.js";
 import { WaitingType } from "../session/monitor.js";
 import { splitMessage } from "./utils.js";
 
@@ -440,6 +440,176 @@ describe("notifyWaiting with MULTIPLE_CHOICE", () => {
 // ---------------------------------------------------------------------------
 // friendlyModelName
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// sendPing
+// ---------------------------------------------------------------------------
+
+describe("sendPing", () => {
+  const chatId = 12345;
+  let mockBot: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBot = { api: { sendMessage: vi.fn().mockResolvedValue({}) } };
+    registerForNotifications(mockBot, chatId);
+  });
+
+  it("sends the text to the registered chat", async () => {
+    await sendPing("⏳ Still working...");
+    expect(mockBot.api.sendMessage).toHaveBeenCalledWith(
+      chatId,
+      "⏳ Still working...",
+      expect.anything()
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// notifyImages
+// ---------------------------------------------------------------------------
+
+describe("notifyImages", () => {
+  const chatId = 12345;
+  let mockBot: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBot = { api: { sendMessage: vi.fn().mockResolvedValue({}) } };
+    registerForNotifications(mockBot, chatId);
+  });
+
+  it("sends a message with All/Part/None buttons for multiple images", async () => {
+    const images = [
+      { mediaType: "image/png", data: "base64data1" },
+      { mediaType: "image/jpeg", data: "base64data2" },
+    ];
+
+    await notifyImages(images, "key123");
+
+    const call = mockBot.api.sendMessage.mock.calls[0];
+    expect(call[1]).toContain("2 images");
+    expect(call[1]).toContain("them");
+    const keyboard = call[2]?.reply_markup?.inline_keyboard as Array<Array<{ text: string; callback_data: string }>>;
+    const allButtons = keyboard.flat();
+    expect(allButtons.find((b: any) => b.callback_data === "images:send:all:key123")).toBeDefined();
+    expect(allButtons.find((b: any) => b.callback_data === "images:part:key123")).toBeDefined();
+    expect(allButtons.find((b: any) => b.callback_data === "images:skip:key123")).toBeDefined();
+  });
+
+  it("uses singular form for a single image", async () => {
+    const images = [{ mediaType: "image/png", data: "base64data" }];
+
+    await notifyImages(images, "key456");
+
+    const call = mockBot.api.sendMessage.mock.calls[0];
+    expect(call[1]).toContain("1 image");
+    expect(call[1]).not.toContain("images");
+    expect(call[1]).toContain("it");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// notifyResponse — model suffix
+// ---------------------------------------------------------------------------
+
+describe("notifyResponse with model", () => {
+  const chatId = 12345;
+  let mockBot: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBot = { api: { sendMessage: vi.fn().mockResolvedValue({}) } };
+    registerForNotifications(mockBot, chatId);
+  });
+
+  it("includes friendly model name in response when model is present", async () => {
+    vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "session-abc", cwd: "/proj" });
+
+    await notifyResponse({
+      sessionId: "session-abc",
+      projectName: "myproject",
+      cwd: "/proj",
+      filePath: "/path/to/session.jsonl",
+      text: "Done",
+      model: "claude-opus-4-6",
+    });
+
+    const call = mockBot.api.sendMessage.mock.calls[0];
+    expect(call[1]).toContain("opus 4.6");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sendStartupMessage — with attached session
+// ---------------------------------------------------------------------------
+
+describe("sendStartupMessage with attached session", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it("includes attached session ID in the startup message", async () => {
+    vi.mocked(readFile).mockResolvedValue("50620969" as any);
+    vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "abc12345-full-id", cwd: "/proj" });
+    const mockBot = { api: { sendMessage: vi.fn().mockResolvedValue({}) } } as any;
+
+    await sendStartupMessage(mockBot);
+
+    const call = mockBot.api.sendMessage.mock.calls[0];
+    expect(call[1]).toContain("abc12345");
+  });
+
+  it("falls back to plain text when MarkdownV2 fails", async () => {
+    vi.mocked(readFile).mockResolvedValue("50620969" as any);
+    vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "abc12345-full-id", cwd: "/proj" });
+    const mockBot = {
+      api: {
+        sendMessage: vi.fn()
+          .mockRejectedValueOnce(new Error("parse error"))
+          .mockResolvedValue({}),
+      },
+    } as any;
+
+    await sendStartupMessage(mockBot);
+
+    // First call fails (MarkdownV2), second call succeeds (plain text)
+    expect(mockBot.api.sendMessage).toHaveBeenCalledTimes(2);
+    const secondCall = mockBot.api.sendMessage.mock.calls[1];
+    expect(secondCall[1]).toContain("abc12345");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// notifyPermission — fallback on markdown failure
+// ---------------------------------------------------------------------------
+
+describe("notifyPermission fallback", () => {
+  const chatId = 12345;
+  let mockBot: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBot = { api: { sendMessage: vi.fn() } };
+    registerForNotifications(mockBot, chatId);
+  });
+
+  it("falls back to sending raw toolInput when markdown message fails", async () => {
+    mockBot.api.sendMessage
+      .mockRejectedValueOnce(new Error("parse error"))
+      .mockResolvedValueOnce({});
+
+    await notifyPermission({
+      requestId: "req-001",
+      toolName: "Bash",
+      toolInput: '{"command":"npm test"}',
+      toolCommand: "npm test",
+      filePath: "/path/to/session.jsonl",
+    });
+
+    expect(mockBot.api.sendMessage).toHaveBeenCalledTimes(2);
+    const fallbackCall = mockBot.api.sendMessage.mock.calls[1];
+    expect(fallbackCall[1]).toBe('{"command":"npm test"}');
+  });
+});
 
 describe("friendlyModelName", () => {
   it.each([

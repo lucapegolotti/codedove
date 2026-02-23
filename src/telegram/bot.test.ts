@@ -5,6 +5,28 @@ import { getAttachedSession, listSessions, getLatestSessionFileForCwd, readSessi
 import { unlink, writeFile } from "fs/promises";
 import { watchForResponse, getFileSize } from "../session/monitor.js";
 import { isServiceInstalled } from "../service/index.js";
+import { handleVoice } from "./handlers/voice.js";
+import { handleImageMessage } from "./handlers/image.js";
+import { summarizeSession } from "../agent/summarizer.js";
+import { isTimerActive, stopTimer } from "./handlers/timer.js";
+import { fetchAndOfferImages } from "./handlers/text.js";
+import { access } from "fs/promises";
+
+vi.mock("./handlers/voice.js", () => ({
+  handleVoice: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("./handlers/image.js", () => ({
+  handleImageMessage: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("./handlers/timer.js", () => ({
+  isTimerActive: vi.fn().mockReturnValue(false),
+  stopTimer: vi.fn().mockReturnValue(null),
+  setTimerSetup: vi.fn(),
+  getTimerSetup: vi.fn().mockReturnValue(null),
+  startTimer: vi.fn(),
+}));
 
 vi.mock("../session/tmux.js", () => ({
   findClaudePane: vi.fn(),
@@ -703,5 +725,426 @@ describe("model: callbacks", () => {
     const answers = apiCalls.filter((c) => c.method === "answerCallbackQuery");
     expect(answers.some((c) => c.payload.text === "Could not find the Claude Code tmux pane.")).toBe(true);
     expect(sendKeysToPane).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Update helpers for media message types
+// ---------------------------------------------------------------------------
+
+function photoUpdate(chatId = 12345) {
+  return {
+    update_id: 3,
+    message: {
+      message_id: 3, date: 0,
+      chat: { id: chatId, type: "private" as const, first_name: "Test" },
+      from: { id: chatId, is_bot: false, first_name: "Test" },
+      photo: [
+        { file_id: "small-id", file_unique_id: "s1", width: 90, height: 90 },
+        { file_id: "large-id", file_unique_id: "l1", width: 800, height: 600 },
+      ],
+      caption: "test caption",
+    },
+  };
+}
+
+function documentUpdate(mimeType: string, chatId = 12345) {
+  return {
+    update_id: 4,
+    message: {
+      message_id: 4, date: 0,
+      chat: { id: chatId, type: "private" as const, first_name: "Test" },
+      from: { id: chatId, is_bot: false, first_name: "Test" },
+      document: { file_id: "doc-id", file_unique_id: "d1", file_name: "image.png", mime_type: mimeType },
+    },
+  };
+}
+
+function voiceUpdate(chatId = 12345) {
+  return {
+    update_id: 5,
+    message: {
+      message_id: 5, date: 0,
+      chat: { id: chatId, type: "private" as const, first_name: "Test" },
+      from: { id: chatId, is_bot: false, first_name: "Test" },
+      voice: { file_id: "voice-id", file_unique_id: "v1", duration: 3 },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// message:photo handler
+// ---------------------------------------------------------------------------
+
+describe("message:photo handler", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls handleImageMessage with the largest photo", async () => {
+    const { bot } = await makeBot();
+
+    await bot.handleUpdate(photoUpdate() as any);
+
+    expect(handleImageMessage).toHaveBeenCalledWith(
+      expect.anything(),   // ctx
+      12345,               // chatId
+      "large-id",          // file_id of the largest photo
+      "image/jpeg",        // mime type
+      "test caption",      // caption
+      "test-token"         // token
+    );
+  });
+
+  it("replies with error when handleImageMessage throws", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    vi.mocked(handleImageMessage).mockRejectedValueOnce(new Error("image processing failed"));
+
+    await bot.handleUpdate(photoUpdate() as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("Couldn't process the image"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// message:document handler
+// ---------------------------------------------------------------------------
+
+describe("message:document handler", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls handleImageMessage for image MIME types", async () => {
+    const { bot } = await makeBot();
+
+    await bot.handleUpdate(documentUpdate("image/png") as any);
+
+    expect(handleImageMessage).toHaveBeenCalledWith(
+      expect.anything(),   // ctx
+      12345,               // chatId
+      "doc-id",            // file_id
+      "image/png",         // mime type
+      "",                  // caption (none in documentUpdate)
+      "test-token"         // token
+    );
+  });
+
+  it("ignores non-image documents", async () => {
+    const { bot } = await makeBot();
+
+    await bot.handleUpdate(documentUpdate("application/pdf") as any);
+
+    expect(handleImageMessage).not.toHaveBeenCalled();
+  });
+
+  it("replies with error when handleImageMessage throws", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    vi.mocked(handleImageMessage).mockRejectedValueOnce(new Error("image processing failed"));
+
+    await bot.handleUpdate(documentUpdate("image/png") as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("Couldn't process the image"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// message:voice handler
+// ---------------------------------------------------------------------------
+
+describe("message:voice handler", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls handleVoice with correct arguments", async () => {
+    const { bot } = await makeBot();
+
+    await bot.handleUpdate(voiceUpdate() as any);
+
+    expect(handleVoice).toHaveBeenCalledWith(
+      expect.anything(),   // ctx
+      12345,               // chatId
+      "test-token"         // token
+    );
+  });
+
+  it("replies with error when handleVoice throws", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    vi.mocked(handleVoice).mockRejectedValueOnce(new Error("voice processing failed"));
+
+    await bot.handleUpdate(voiceUpdate() as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("Couldn't process your voice message"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// message:text error handling
+// ---------------------------------------------------------------------------
+
+describe("message:text error handling", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.mocked(getAttachedSession).mockReset();
+    vi.mocked(findClaudePane).mockReset();
+  });
+
+  it("replies 'Something went wrong' when processTextTurn throws", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    // Make getAttachedSession throw an unexpected error (not return null)
+    // This will cause processTextTurn to throw, triggering the catch block in bot.ts
+    vi.mocked(getAttachedSession).mockRejectedValue(new Error("unexpected DB failure"));
+    vi.mocked(findClaudePane).mockResolvedValue({ found: false, reason: "no_claude_pane" });
+
+    await bot.handleUpdate(textUpdate("hello") as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("Something went wrong"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /status command
+// ---------------------------------------------------------------------------
+
+describe("/status command", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.mocked(getAttachedSession).mockReset();
+    vi.mocked(listSessions).mockReset();
+  });
+
+  it("shows project name and watcher state when session is attached", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "s1", cwd: "/proj/myapp" });
+    vi.mocked(listSessions).mockResolvedValue([
+      { sessionId: "s1", cwd: "/proj/myapp", projectName: "myapp", lastMessage: "", mtime: new Date() },
+    ]);
+
+    await bot.handleUpdate(commandUpdate("/status") as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("myapp") && t.includes("watcher"))).toBe(true);
+  });
+
+  it("replies 'No session attached' when no session exists", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    vi.mocked(getAttachedSession).mockResolvedValue(null);
+
+    await bot.handleUpdate(commandUpdate("/status") as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("No session attached"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /images command
+// ---------------------------------------------------------------------------
+
+describe("/images command", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.mocked(getAttachedSession).mockReset();
+  });
+
+  it("sends asking message when session is attached", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "s1", cwd: "/proj" });
+    vi.mocked(injectInput).mockResolvedValue({ found: false, reason: "no_claude_pane" });
+
+    await bot.handleUpdate(commandUpdate("/images") as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("Asking Claude Code for image files"))).toBe(true);
+  });
+
+  it("replies 'No session attached' when no session exists", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    vi.mocked(getAttachedSession).mockResolvedValue(null);
+
+    await bot.handleUpdate(commandUpdate("/images") as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("No session attached"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /timer command
+// ---------------------------------------------------------------------------
+
+describe("/timer command", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("stops timer and shows message when timer is active", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    vi.mocked(isTimerActive).mockReturnValue(true);
+    vi.mocked(stopTimer).mockReturnValue({ frequencyMin: 5, prompt: "check status" });
+
+    await bot.handleUpdate(commandUpdate("/timer") as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("Timer stopped") && t.includes("5min"))).toBe(true);
+  });
+
+  it("shows setup keyboard when timer is inactive", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    vi.mocked(isTimerActive).mockReturnValue(false);
+
+    await bot.handleUpdate(commandUpdate("/timer") as any);
+
+    const sends = apiCalls.filter((c) => c.method === "sendMessage");
+    expect(sends.length).toBeGreaterThan(0);
+    const keyboard = sends[0].payload.reply_markup as any;
+    expect(keyboard).toBeDefined();
+    expect(keyboard.inline_keyboard).toBeDefined();
+    const texts = sends.map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("recurring prompt"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /summarize command
+// ---------------------------------------------------------------------------
+
+describe("/summarize command", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("shows summary on happy path", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    vi.mocked(summarizeSession).mockResolvedValue("Here is a summary of the session.");
+
+    await bot.handleUpdate(commandUpdate("/summarize") as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("summary of the session"))).toBe(true);
+  });
+
+  it("shows error message when summarization fails", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    vi.mocked(summarizeSession).mockRejectedValue(new Error("API failure"));
+
+    await bot.handleUpdate(commandUpdate("/summarize") as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("Could not generate summary"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /polishvoice command
+// ---------------------------------------------------------------------------
+
+describe("/polishvoice command", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("toggles polish off when currently on (flag file absent)", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    // access rejects = file absent = polish ON (default in mock setup)
+    vi.mocked(access).mockRejectedValue(new Error("ENOENT"));
+
+    await bot.handleUpdate(commandUpdate("/polishvoice") as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("Voice polish") && t.includes("off"))).toBe(true);
+    expect(writeFile).toHaveBeenCalled();
+  });
+
+  it("toggles polish on when currently off (flag file exists)", async () => {
+    const { bot, apiCalls } = await makeBot();
+
+    // access resolves = file exists = polish OFF
+    vi.mocked(access).mockResolvedValue(undefined as any);
+
+    await bot.handleUpdate(commandUpdate("/polishvoice") as any);
+
+    const texts = apiCalls
+      .filter((c) => c.method === "sendMessage")
+      .map((c) => c.payload.text as string);
+    expect(texts.some((t) => t.includes("Voice polish") && t.includes("on"))).toBe(true);
+    expect(unlink).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /escape command
+// ---------------------------------------------------------------------------
+
+describe("/escape command", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.mocked(getAttachedSession).mockReset();
+    vi.mocked(findClaudePane).mockReset();
+  });
+
+  it("sends Escape via sendClaudeCommand", async () => {
+    const { bot } = await makeBot();
+
+    vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "s1", cwd: "/proj" });
+    vi.mocked(findClaudePane).mockResolvedValue({ found: true, paneId: "%3" });
+
+    await bot.handleUpdate(commandUpdate("/escape") as any);
+
+    expect(sendKeysToPane).toHaveBeenCalledWith("%3", "Escape");
   });
 });
