@@ -7,10 +7,12 @@ import { startInjectionWatcher, snapshotBaseline } from "../text.js";
 export async function handleWaitingCallback(ctx: Context, data: string): Promise<void> {
   if (data === "waiting:ignore") {
     await ctx.answerCallbackQuery({ text: "Ignored." });
+    await ctx.editMessageReplyMarkup().catch(() => {});
     return;
   }
   if (data === "waiting:custom") {
     await ctx.answerCallbackQuery({ text: "Send your input as a text message." });
+    await ctx.editMessageReplyMarkup().catch(() => {});
     return;
   }
   const input = resolveWaitingAction(data);
@@ -21,6 +23,7 @@ export async function handleWaitingCallback(ctx: Context, data: string): Promise
       const result = await injectInput(attached.cwd, input);
       if (result.found) {
         await ctx.answerCallbackQuery({ text: "Sent!" });
+        await ctx.editMessageReplyMarkup().catch(() => {});
         await ctx.reply(`Sent "${input || "↩"}". Claude is resuming.`);
         await startInjectionWatcher(attached, ctx.chat!.id, undefined, undefined, preBaseline);
       } else {

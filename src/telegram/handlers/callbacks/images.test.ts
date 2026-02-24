@@ -93,7 +93,7 @@ describe("handleImagesCallback", () => {
       ];
       pendingImages.set("s1", images);
 
-      await handleImagesCallback(ctx, "images:send:s1", bot);
+      await handleImagesCallback(ctx, "images:send:all:s1", bot);
 
       expect(pendingImages.has("s1")).toBe(false);
       expect(ctx.answerCallbackQuery).toHaveBeenCalledWith({ text: "Sending\u2026" });
@@ -105,7 +105,7 @@ describe("handleImagesCallback", () => {
       const ctx = makeCtx();
       const bot = makeBot();
 
-      await handleImagesCallback(ctx, "images:send:gone", bot);
+      await handleImagesCallback(ctx, "images:send:all:gone", bot);
 
       expect(ctx.answerCallbackQuery).toHaveBeenCalledWith({ text: "Images no longer available." });
       expect(ctx.editMessageReplyMarkup).not.toHaveBeenCalled();
@@ -121,7 +121,7 @@ describe("handleImagesCallback", () => {
       ];
       pendingImages.set("fb1", images);
 
-      await handleImagesCallback(ctx, "images:send:fb1", bot);
+      await handleImagesCallback(ctx, "images:send:all:fb1", bot);
 
       expect(bot.api.sendPhoto).toHaveBeenCalled();
       expect(bot.api.sendDocument).toHaveBeenCalledWith(12345, expect.any(InputFile));
@@ -138,7 +138,7 @@ describe("handleImagesCallback", () => {
       ];
       pendingImages.set("fb2", images);
 
-      await handleImagesCallback(ctx, "images:send:fb2", bot);
+      await handleImagesCallback(ctx, "images:send:all:fb2", bot);
 
       expect(log).toHaveBeenCalledWith({
         message: expect.stringContaining("sendPhoto/sendDocument error: doc failed"),

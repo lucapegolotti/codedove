@@ -20,11 +20,13 @@ export async function handleSessionCallback(ctx: Context, data: string): Promise
     await writeFile(ATTACHED_SESSION_PATH, `${session.sessionId}\n${session.cwd}`, "utf8");
     setLaunchedPaneId(undefined);
     await ctx.answerCallbackQuery({ text: "Attached!" });
+    await ctx.editMessageReplyMarkup().catch(() => {});
     await ctx.reply(`Attached to \`${session.projectName}\`. Send your first message.`, {
       parse_mode: "Markdown",
     });
   } else {
     await ctx.answerCallbackQuery();
+    await ctx.editMessageReplyMarkup().catch(() => {});
     const keyboard = new InlineKeyboard()
       .text("Launch", `launch:${sessionId}`)
       .text("Launch (skip permissions)", `launch:skip:${sessionId}`)

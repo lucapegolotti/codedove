@@ -37,6 +37,7 @@ export async function handleImagesCallback(ctx: Context, data: string, bot: Bot)
     }
     pendingImageCount = { key, max: images.length };
     await ctx.answerCallbackQuery();
+    await ctx.editMessageReplyMarkup().catch(() => {});
     await ctx.reply(`How many images would you like? (1–${images.length})`);
     return;
   }
