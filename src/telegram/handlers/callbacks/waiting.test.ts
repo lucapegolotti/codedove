@@ -29,6 +29,7 @@ vi.mock("../text.js", () => ({
 function makeCtx() {
   return {
     answerCallbackQuery: vi.fn().mockResolvedValue(undefined),
+    editMessageReplyMarkup: vi.fn().mockResolvedValue(undefined),
     reply: vi.fn().mockResolvedValue(undefined),
     chat: { id: 12345 },
   } as unknown as Context;
