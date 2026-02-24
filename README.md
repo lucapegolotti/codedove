@@ -15,7 +15,7 @@
 Send a message from Telegram. Claude Code runs on your Mac. You get the response back in Telegram — as text or as a voice note.
 
 <p align="center">
-  <video src="codedove.mp4" width="600" controls></video>
+  <img src="codedove.gif" alt="codedove demo" width="600">
 </p>
 
 ## What it is
