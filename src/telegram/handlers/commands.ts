@@ -254,7 +254,7 @@ export function registerCommands(bot: Bot): void {
       return;
     }
     await ctx.reply("Asking Claude Code for image files…");
-    await fetchAndOfferImages(attached.cwd);
+    await fetchAndOfferImages(ctx, ctx.chat.id, attached);
   });
 
   bot.command("escape", async (ctx) => {

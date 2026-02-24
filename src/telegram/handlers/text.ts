@@ -1,12 +1,11 @@
 import { Context } from "grammy";
 import { log } from "../../logger.js";
-import { ATTACHED_SESSION_PATH, getAttachedSession, listSessions, getLatestSessionFileForCwd } from "../../session/history.js";
-import { watchForResponse, getFileSize } from "../../session/monitor.js";
+import { ATTACHED_SESSION_PATH, getAttachedSession, listSessions } from "../../session/history.js";
+import type { SessionResponseState, DetectedImage } from "../../session/monitor.js";
 import { notifyResponse, notifyImages, sendPing } from "../notifications.js";
 import { sendMarkdownReply } from "../utils.js";
 import { launchedPaneId } from "./sessions.js";
 import { findClaudePane, sendInterrupt, injectInput } from "../../session/tmux.js";
-import type { SessionResponseState, DetectedImage } from "../../session/monitor.js";
 import { pendingImages, pendingImageCount, clearPendingImageCount } from "./callbacks/index.js";
 import { InputFile } from "grammy";
 import { writeFile, mkdir, readFile } from "fs/promises";
@@ -30,55 +29,82 @@ export function clearActiveWatcher(): void { watcherManager.clear(); }
 
 // Ask Claude Code for image files it created and offer them via the image picker.
 // Used by the /images command.
-export async function fetchAndOfferImages(cwd: string): Promise<void> {
-  const result = await (await import("../../session/tmux.js")).injectInput(
-    cwd,
-    "List only the absolute file paths of image files you created in this session, one per line. Reply with ONLY the paths, nothing else."
+export async function fetchAndOfferImages(
+  ctx: Context,
+  chatId: number,
+  attached: { sessionId: string; cwd: string }
+): Promise<void> {
+  const prompt =
+    "List only the absolute file paths of image files you created in this session, one per line. Reply with ONLY the paths, nothing else.";
+
+  // If Claude is currently processing, interrupt it first (same as processTextTurn)
+  if (watcherManager.isActive) {
+    const pane = await findClaudePane(attached.cwd);
+    if (pane.found) {
+      log({ message: `Interrupting Claude Code (Ctrl+C) for /images` });
+      watcherManager.stopAndFlush();
+      await sendInterrupt(pane.paneId);
+      await new Promise((r) => setTimeout(r, 600));
+    }
+  }
+
+  // Snapshot baseline BEFORE injection
+  const preBaseline = await watcherManager.snapshotBaseline(attached.cwd);
+
+  const result = await injectInput(attached.cwd, prompt);
+  if (!result.found) {
+    await ctx.reply("No Claude Code running at this session.");
+    return;
+  }
+
+  // Show typing indicator while waiting
+  await ctx.replyWithChatAction("typing");
+  const typingInterval = setInterval(() => {
+    ctx.replyWithChatAction("typing").catch(() => {});
+  }, 4000);
+
+  // Custom onResponse: parse image paths instead of forwarding as text
+  const onResponse = async (state: SessionResponseState) => {
+    const paths = state.text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => /^\/\S+\.(png|jpg|jpeg|gif|webp)$/i.test(l));
+
+    const images: DetectedImage[] = [];
+    for (const p of paths) {
+      try {
+        const buf = await readFile(p);
+        const ext = p.split(".").pop()!.toLowerCase();
+        const mediaType =
+          ext === "jpg" || ext === "jpeg"
+            ? "image/jpeg"
+            : ext === "gif"
+              ? "image/gif"
+              : ext === "webp"
+                ? "image/webp"
+                : "image/png";
+        images.push({ mediaType, data: buf.toString("base64") });
+      } catch {
+        /* file not found — skip */
+      }
+    }
+
+    if (images.length > 0) {
+      const key = `${Date.now()}`;
+      pendingImages.set(key, images);
+      await notifyImages(images, key);
+    } else {
+      await sendPing("No image files found.");
+    }
+  };
+
+  await watcherManager.startInjectionWatcher(
+    attached,
+    chatId,
+    onResponse,
+    () => clearInterval(typingInterval),
+    preBaseline
   );
-  if (!result.found) return;
-
-  const latest = await getLatestSessionFileForCwd(cwd);
-  if (!latest) return;
-  const baseline = await getFileSize(latest.filePath);
-
-  await new Promise<void>((resolve) => {
-    const stop = watchForResponse(
-      latest.filePath,
-      baseline,
-      async (state) => {
-        stop();
-        const paths = state.text
-          .split("\n")
-          .map((l) => l.trim())
-          .filter((l) => /^\/\S+\.(png|jpg|jpeg|gif|webp)$/i.test(l));
-
-        const images: DetectedImage[] = [];
-        for (const p of paths) {
-          try {
-            const buf = await readFile(p);
-            const ext = p.split(".").pop()!.toLowerCase();
-            const mediaType = ext === "jpg" || ext === "jpeg" ? "image/jpeg"
-              : ext === "gif" ? "image/gif"
-              : ext === "webp" ? "image/webp"
-              : "image/png";
-            images.push({ mediaType, data: buf.toString("base64") });
-          } catch { /* file not found — skip */ }
-        }
-
-        if (images.length > 0) {
-          const key = `${Date.now()}`;
-          pendingImages.set(key, images);
-          await notifyImages(images, key);
-        } else {
-          await (await import("../notifications.js")).sendPing("No image files found.");
-        }
-        resolve();
-      },
-      undefined,
-      () => resolve()
-    );
-    setTimeout(resolve, 30_000);
-  });
 }
 
 export async function ensureSession(

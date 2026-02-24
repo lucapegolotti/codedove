@@ -983,6 +983,8 @@ describe("/images command", () => {
     const { bot, apiCalls } = await makeBot();
 
     vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "s1", cwd: "/proj" });
+    vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({ sessionId: "s1", filePath: "/s1.jsonl" });
+    vi.mocked(getFileSize).mockResolvedValue(0);
     vi.mocked(injectInput).mockResolvedValue({ found: false, reason: "no_claude_pane" });
 
     await bot.handleUpdate(commandUpdate("/images") as any);
