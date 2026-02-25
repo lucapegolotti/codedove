@@ -33,7 +33,7 @@ export type SessionResponseState = {
 
 export type ResponseCallback = (state: SessionResponseState) => Promise<void>;
 
-export type DetectedImage = { mediaType: string; data: string };
+export type DetectedImage = { mediaType: string; data: string; path?: string };
 export type ImagesCallback = (images: DetectedImage[]) => Promise<void>;
 
 const YES_NO_PATTERNS = [/\(y\/n\)/i, /\[y\/N\]/i, /confirm\?/i];
@@ -243,9 +243,24 @@ export function watchForResponse(
     awaitWriteFinish: false,
   });
 
+  // Inactivity timeout: resets every time new content arrives.
+  const INACTIVITY_LIMIT = 10 * 60_000;
+  let inactivityId: ReturnType<typeof setTimeout>;
+
+  const resetInactivityTimeout = () => {
+    clearTimeout(inactivityId);
+    inactivityId = setTimeout(() => {
+      if (done) return;
+      done = true;
+      cleanup();
+      log({ message: `watchForResponse: session ${sessionId.slice(0, 8)} timed out after ${INACTIVITY_LIMIT / 60_000}min of inactivity` });
+      onComplete?.();
+    }, INACTIVITY_LIMIT);
+  };
+
   const cleanup = () => {
     clearTimeout(pingId);
-    clearTimeout(maxLifetimeId);
+    clearTimeout(inactivityId);
     watcher.close();
   };
 
@@ -253,19 +268,12 @@ export function watchForResponse(
     if (!done && lastSentText === null) onPing?.();
   }, 60_000);
 
-  // Safety timeout: if no result event arrives within 10 minutes, clean up
-  // to prevent leaked watchers from accumulating indefinitely.
-  const MAX_LIFETIME = 10 * 60_000;
-  const maxLifetimeId = setTimeout(() => {
-    if (done) return;
-    done = true;
-    cleanup();
-    log({ message: `watchForResponse: session ${sessionId.slice(0, 8)} timed out after ${MAX_LIFETIME / 60_000}min` });
-    onComplete?.();
-  }, MAX_LIFETIME);
+  resetInactivityTimeout();
 
   watcher.on("change", () => {
     if (done) return;
+
+    resetInactivityTimeout();
 
     readFile(filePath)
       .then(async (buf) => {
@@ -333,7 +341,7 @@ export function watchForResponse(
                     : ext === "gif" ? "image/gif"
                     : ext === "webp" ? "image/webp"
                     : "image/png";
-                  detectedImages.push({ mediaType, data: imgBuf.toString("base64") });
+                  detectedImages.push({ mediaType, data: imgBuf.toString("base64"), path: imgPath });
                 } catch { /* file unreadable — skip */ }
               }
               if (detectedImages.length > 0) {
