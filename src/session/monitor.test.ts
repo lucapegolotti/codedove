@@ -358,6 +358,91 @@ describe("watchForResponse", () => {
     await unlink(imgFile).catch(() => {});
   });
 
+  it("fires onToolUse when tool_use blocks appear after baseline", async () => {
+    const file = join(tmpdir(), `cv-watch-tool-${Date.now()}.jsonl`);
+    await writeFile(file, "");
+
+    const tools: { id: string; name: string; command?: string }[][] = [];
+    const stop = watchForResponse(
+      file,
+      0,
+      async () => {},
+      undefined,
+      undefined,
+      undefined,
+      async (t) => { tools.push(t); }
+    );
+
+    await appendFile(
+      file,
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } },
+          ],
+        },
+      }) + "\n"
+    );
+
+    await new Promise((r) => setTimeout(r, 500));
+
+    expect(tools.length).toBeGreaterThanOrEqual(1);
+    expect(tools[0]).toEqual([{ id: "t1", name: "Bash", command: "ls" }]);
+
+    stop();
+  });
+
+  it("does not fire onToolUse for already-reported tool IDs", async () => {
+    const file = join(tmpdir(), `cv-watch-tool-dedup-${Date.now()}.jsonl`);
+    await writeFile(file, "");
+
+    const toolCalls: { id: string; name: string; command?: string }[][] = [];
+    const stop = watchForResponse(
+      file,
+      0,
+      async () => {},
+      undefined,
+      undefined,
+      undefined,
+      async (t) => { toolCalls.push(t); }
+    );
+
+    await appendFile(
+      file,
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "t1", name: "Read", input: { file_path: "/foo" } },
+          ],
+        },
+      }) + "\n"
+    );
+    await new Promise((r) => setTimeout(r, 500));
+
+    // Write a new tool
+    await appendFile(
+      file,
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "t2", name: "Edit", input: {} },
+          ],
+        },
+      }) + "\n"
+    );
+    await new Promise((r) => setTimeout(r, 500));
+
+    // First call should have t1, second should have only t2 (not t1 again)
+    expect(toolCalls.length).toBeGreaterThanOrEqual(2);
+    expect(toolCalls[0]).toEqual([{ id: "t1", name: "Read" }]);
+    expect(toolCalls[1]).toEqual([{ id: "t2", name: "Edit" }]);
+
+    stop();
+  });
+
   it("calls onPing after 60s with no response text", async () => {
     // This test is hard to run with real timers, so we verify the onPing path
     // at a structural level — the important thing is that watchForResponse

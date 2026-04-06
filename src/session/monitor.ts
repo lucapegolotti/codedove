@@ -2,7 +2,7 @@ import chokidar from "chokidar";
 import { readFile, realpath, stat } from "fs/promises";
 import { PROJECTS_PATH } from "./history.js";
 import { log } from "../logger.js";
-import { parseAssistantText, extractCwd, findResultEvent, findExitPlanMode, extractWrittenImagePaths } from "./jsonl.js";
+import { parseAssistantText, extractCwd, findResultEvent, findExitPlanMode, extractWrittenImagePaths, extractToolUses, type ToolUseEntry } from "./jsonl.js";
 
 export enum WaitingType {
   YES_NO = "YES_NO",
@@ -35,6 +35,8 @@ export type ResponseCallback = (state: SessionResponseState) => Promise<void>;
 
 export type DetectedImage = { mediaType: string; data: string; path?: string };
 export type ImagesCallback = (images: DetectedImage[]) => Promise<void>;
+
+export type ToolUseCallback = (tools: ToolUseEntry[]) => Promise<void>;
 
 const YES_NO_PATTERNS = [/\(y\/n\)/i, /\[y\/N\]/i, /confirm\?/i];
 const ENTER_PATTERNS = [/press\s+enter/i, /hit\s+enter/i];
@@ -218,7 +220,8 @@ export function watchForResponse(
   onResponse: ResponseCallback,
   onPing?: () => void,
   onComplete?: () => void,
-  onImages?: ImagesCallback
+  onImages?: ImagesCallback,
+  onToolUse?: ToolUseCallback
 ): () => void {
   const parts = filePath.split("/");
   const sessionId = parts[parts.length - 1].replace(".jsonl", "");
@@ -232,6 +235,7 @@ export function watchForResponse(
   const detectedImages: DetectedImage[] = [];
   // Image files written via the Write tool (detected by file extension)
   const writtenImagePaths = new Set<string>();
+  const reportedToolIds = new Set<string>();
   // Tracks an in-flight onResponse promise so the complete path can await it
   // before calling onComplete, preventing a race where two rapid chokidar events
   // cause onComplete to fire while onResponse is still awaiting the Telegram API.
@@ -297,6 +301,18 @@ export function watchForResponse(
         const latestText = parsed.text;
         const latestCwd = parsed.cwd ?? cwd;
         const latestModel = parsed.model;
+
+        // Detect and report new tool_use blocks
+        if (onToolUse) {
+          const allTools = extractToolUses(lines);
+          const newTools = allTools.filter((t) => !reportedToolIds.has(t.id));
+          if (newTools.length > 0) {
+            for (const t of newTools) reportedToolIds.add(t.id);
+            onToolUse(newTools).catch(
+              (err) => log({ message: `watchForResponse onToolUse error: ${err instanceof Error ? err.message : String(err)}` })
+            );
+          }
+        }
 
         // Collect image files written via the Write tool
         if (onImages) {
