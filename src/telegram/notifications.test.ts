@@ -151,8 +151,6 @@ describe("notifyResponse", () => {
   });
 
   it("preserves colons and semicolons in middle of text, strips trailing colon", async () => {
-    vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "session-abc", cwd: "/proj" });
-
     await notifyResponse(makeState({ text: "Step one; step two: done" }));
 
     expect(mockBot.api.sendMessage).toHaveBeenCalledWith(
@@ -163,8 +161,6 @@ describe("notifyResponse", () => {
   });
 
   it("sends text unchanged when there are no semicolons", async () => {
-    vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "session-abc", cwd: "/proj" });
-
     await notifyResponse(makeState({ text: "All good here" }));
 
     expect(mockBot.api.sendMessage).toHaveBeenCalledWith(
@@ -174,43 +170,17 @@ describe("notifyResponse", () => {
     );
   });
 
-  it("returns without sending when registeredBot is null", async () => {
-    // Re-import to get a fresh module state — not possible easily, so instead
-    // we test by calling notifyResponse without ever calling registerForNotifications.
-    // We achieve this by temporarily using a fresh import cycle via a workaround:
-    // reset module state by creating a new bot mock scenario where we can verify
-    // that if getAttachedSession isn't even called, sendMessage never fires.
-    //
-    // Since module state persists within a test run, we can't easily null out
-    // registeredBot. Instead, we verify the guard by checking that sendMessage
-    // is NOT called when getAttachedSession returns a non-matching session
-    // (which is the same observable effect as the null-bot guard).
-    //
-    // For a true null-bot test: we must reset module state. Use a dynamic import
-    // trick by checking behavior with mismatched session below in the next test.
-    // Here we settle for ensuring getAttachedSession is never called at all if
-    // we arrange for the bot to be null — done by checking the mock bot is what
-    // was registered and the path works as documented.
-    //
-    // The real guard test: after registering, verify the session mismatch path.
-    vi.mocked(getAttachedSession).mockResolvedValue(null);
+  it("forwards responses from any session, not just the attached one", async () => {
+    await notifyResponse(makeState({ sessionId: "some-other-session", text: "Hello from other session" }));
 
-    await notifyResponse(makeState());
-
-    expect(mockBot.api.sendMessage).not.toHaveBeenCalled();
-  });
-
-  it("returns without sending when attached session ID doesn't match state's session ID", async () => {
-    vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "different-session", cwd: "/proj" });
-
-    await notifyResponse(makeState({ sessionId: "session-abc" }));
-
-    expect(mockBot.api.sendMessage).not.toHaveBeenCalled();
+    expect(mockBot.api.sendMessage).toHaveBeenCalledWith(
+      chatId,
+      expect.stringContaining("Hello from other session"),
+      expect.anything()
+    );
   });
 
   it("skips plan approval text to avoid a buttonless duplicate before notifyWaiting fires", async () => {
-    vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "session-abc", cwd: "/proj" });
-
     await notifyResponse(makeState({ text: "❓ Claude Code needs your approval for the plan" }));
 
     expect(mockBot.api.sendMessage).not.toHaveBeenCalled();
@@ -524,8 +494,6 @@ describe("notifyResponse with model", () => {
   });
 
   it("includes friendly model name in response when model is present", async () => {
-    vi.mocked(getAttachedSession).mockResolvedValue({ sessionId: "session-abc", cwd: "/proj" });
-
     await notifyResponse({
       sessionId: "session-abc",
       projectName: "myproject",

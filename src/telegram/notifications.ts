@@ -72,9 +72,6 @@ export class NotificationService {
     if (!this.bot || !this.chatId) return;
     if (PLAN_APPROVAL_RE.test(state.text)) return;
 
-    const attached = await getAttachedSession().catch(() => null);
-    if (!attached || attached.sessionId !== state.sessionId) return;
-
     const modelSuffix = state.model ? ` (${friendlyModelName(state.model)})` : "";
     const text = `\`${state.projectName}${modelSuffix}:\` ${state.text.replace(/:$/m, "")}`;
     try {
