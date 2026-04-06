@@ -6,6 +6,7 @@ import {
   findExitPlanMode,
   extractWrittenImagePaths,
   findLastToolUse,
+  extractToolUses,
 } from "./jsonl.js";
 
 function assistantLine(text: string, cwd = "/tmp/project", model?: string): string {
@@ -138,6 +139,90 @@ describe("extractWrittenImagePaths", () => {
 
   it("returns empty for no images", () => {
     expect(extractWrittenImagePaths([assistantLine("text")])).toEqual([]);
+  });
+});
+
+describe("extractToolUses", () => {
+  it("extracts tool_use blocks with name and command for Bash", () => {
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "t1", name: "Bash", input: { command: "ls /tmp" } },
+          ],
+        },
+      }),
+    ];
+    const result = extractToolUses(lines);
+    expect(result).toEqual([{ id: "t1", name: "Bash", command: "ls /tmp" }]);
+  });
+
+  it("extracts non-Bash tools with name only", () => {
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "t2", name: "Read", input: { file_path: "/foo.ts" } },
+          ],
+        },
+      }),
+    ];
+    const result = extractToolUses(lines);
+    expect(result).toEqual([{ id: "t2", name: "Read" }]);
+  });
+
+  it("extracts multiple tools from multiple entries", () => {
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "Let me check" },
+            { type: "tool_use", id: "t3", name: "Grep", input: { pattern: "foo" } },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "t4", name: "Bash", input: { command: "npm test" } },
+          ],
+        },
+      }),
+    ];
+    const result = extractToolUses(lines);
+    expect(result).toEqual([
+      { id: "t3", name: "Grep" },
+      { id: "t4", name: "Bash", command: "npm test" },
+    ]);
+  });
+
+  it("skips non-assistant entries and entries without tool_use", () => {
+    const lines = [
+      JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "hi" }] } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hello" }] } }),
+    ];
+    const result = extractToolUses(lines);
+    expect(result).toEqual([]);
+  });
+
+  it("truncates long Bash commands to 60 chars", () => {
+    const longCmd = "a".repeat(100);
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "t5", name: "Bash", input: { command: longCmd } },
+          ],
+        },
+      }),
+    ];
+    const result = extractToolUses(lines);
+    expect(result[0].command).toBe("a".repeat(57) + "...");
   });
 });
 

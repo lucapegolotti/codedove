@@ -133,6 +133,41 @@ export function extractWrittenImagePaths(lines: string[]): string[] {
   return paths;
 }
 
+export type ToolUseEntry = {
+  id: string;
+  name: string;
+  command?: string;
+};
+
+/**
+ * Extract all tool_use blocks from JSONL lines.
+ * For Bash, includes a truncated command preview.
+ */
+export function extractToolUses(lines: string[]): ToolUseEntry[] {
+  const result: ToolUseEntry[] = [];
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line);
+      if (entry.type !== "assistant") continue;
+      const blocks: ContentBlock[] = entry.message?.content ?? [];
+      for (const block of blocks) {
+        if (block.type !== "tool_use" || !block.name || !block.id) continue;
+        const tool: ToolUseEntry = { id: block.id, name: block.name };
+        if (block.name === "Bash" && block.input) {
+          const cmd = block.input.command;
+          if (typeof cmd === "string") {
+            tool.command = cmd.length > 60 ? cmd.slice(0, 57) + "..." : cmd;
+          }
+        }
+        result.push(tool);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return result;
+}
+
 /**
  * Find the last tool_use block for a given tool name, scanning backwards.
  * Returns the tool input (as string for string inputs, or the command field,
