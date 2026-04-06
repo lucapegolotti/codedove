@@ -414,7 +414,7 @@ describe("watchForResponse", () => {
         type: "assistant",
         message: {
           content: [
-            { type: "tool_use", id: "t1", name: "Read", input: { file_path: "/foo" } },
+            { type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } },
           ],
         },
       }) + "\n"
@@ -428,7 +428,7 @@ describe("watchForResponse", () => {
         type: "assistant",
         message: {
           content: [
-            { type: "tool_use", id: "t2", name: "Edit", input: {} },
+            { type: "tool_use", id: "t2", name: "Bash", input: { command: "pwd" } },
           ],
         },
       }) + "\n"
@@ -437,8 +437,8 @@ describe("watchForResponse", () => {
 
     // First call should have t1, second should have only t2 (not t1 again)
     expect(toolCalls.length).toBeGreaterThanOrEqual(2);
-    expect(toolCalls[0]).toEqual([{ id: "t1", name: "Read" }]);
-    expect(toolCalls[1]).toEqual([{ id: "t2", name: "Edit" }]);
+    expect(toolCalls[0]).toEqual([{ id: "t1", name: "Bash", command: "ls" }]);
+    expect(toolCalls[1]).toEqual([{ id: "t2", name: "Bash", command: "pwd" }]);
 
     stop();
   });

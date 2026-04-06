@@ -158,7 +158,7 @@ describe("extractToolUses", () => {
     expect(result).toEqual([{ id: "t1", name: "Bash", command: "ls /tmp" }]);
   });
 
-  it("extracts non-Bash tools with name only", () => {
+  it("skips non-Bash tools", () => {
     const lines = [
       JSON.stringify({
         type: "assistant",
@@ -170,10 +170,10 @@ describe("extractToolUses", () => {
       }),
     ];
     const result = extractToolUses(lines);
-    expect(result).toEqual([{ id: "t2", name: "Read" }]);
+    expect(result).toEqual([]);
   });
 
-  it("extracts multiple tools from multiple entries", () => {
+  it("extracts only Bash from mixed tool entries", () => {
     const lines = [
       JSON.stringify({
         type: "assistant",
@@ -195,7 +195,6 @@ describe("extractToolUses", () => {
     ];
     const result = extractToolUses(lines);
     expect(result).toEqual([
-      { id: "t3", name: "Grep" },
       { id: "t4", name: "Bash", command: "npm test" },
     ]);
   });

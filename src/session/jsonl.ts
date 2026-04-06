@@ -151,9 +151,9 @@ export function extractToolUses(lines: string[]): ToolUseEntry[] {
       if (entry.type !== "assistant") continue;
       const blocks: ContentBlock[] = entry.message?.content ?? [];
       for (const block of blocks) {
-        if (block.type !== "tool_use" || !block.name || !block.id) continue;
+        if (block.type !== "tool_use" || block.name !== "Bash" || !block.id) continue;
         const tool: ToolUseEntry = { id: block.id, name: block.name };
-        if (block.name === "Bash" && block.input) {
+        if (block.input) {
           const cmd = block.input.command;
           if (typeof cmd === "string") {
             tool.command = cmd.length > 60 ? cmd.slice(0, 57) + "..." : cmd;
