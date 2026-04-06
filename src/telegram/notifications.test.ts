@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { sendStartupMessage, registerForNotifications, notifyResponse, notifyPermission, notifyWaiting, notifyImages, sendPing, resolveWaitingAction, friendlyModelName } from "./notifications.js";
+import { sendStartupMessage, registerForNotifications, notifyResponse, notifyPermission, notifyWaiting, notifyImages, sendPing, resolveWaitingAction, friendlyModelName, notifications } from "./notifications.js";
 import { WaitingType } from "../session/monitor.js";
 import { splitMessage } from "./utils.js";
 
@@ -593,5 +593,91 @@ describe("friendlyModelName", () => {
     ["totally-unknown", "totally-unknown"],
   ])("%s → %s", (input, expected) => {
     expect(friendlyModelName(input)).toBe(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// notifyToolUse
+// ---------------------------------------------------------------------------
+
+describe("notifyToolUse", () => {
+  let mockBot: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBot = {
+      api: {
+        sendMessage: vi.fn().mockResolvedValue({ message_id: 1 }),
+        editMessageText: vi.fn().mockResolvedValue({}),
+      },
+    };
+  });
+
+  it("sends a new message on first tool use for a session", async () => {
+    notifications.register(mockBot as any, 123);
+    await notifications.notifyToolUse("myproject", "session-1", [
+      { id: "t1", name: "Bash", command: "ls /tmp" },
+    ]);
+    expect(mockBot.api.sendMessage).toHaveBeenCalledWith(
+      123,
+      expect.stringContaining("Bash"),
+      expect.any(Object)
+    );
+  });
+
+  it("edits the existing message on subsequent tool uses for same session", async () => {
+    notifications.register(mockBot as any, 123);
+    mockBot.api.sendMessage.mockResolvedValue({ message_id: 42 });
+
+    await notifications.notifyToolUse("myproject", "session-1", [
+      { id: "t1", name: "Read" },
+    ]);
+    await notifications.notifyToolUse("myproject", "session-1", [
+      { id: "t2", name: "Edit" },
+    ]);
+
+    expect(mockBot.api.editMessageText).toHaveBeenCalledWith(
+      123,
+      42,
+      expect.stringContaining("Read"),
+      expect.any(Object)
+    );
+  });
+
+  it("includes truncated command for Bash tools", async () => {
+    notifications.register(mockBot as any, 123);
+    await notifications.notifyToolUse("myproject", "session-1", [
+      { id: "t1", name: "Bash", command: "npm test" },
+    ]);
+    expect(mockBot.api.sendMessage).toHaveBeenCalledWith(
+      123,
+      expect.stringContaining("Bash(`npm test`)"),
+      expect.any(Object)
+    );
+  });
+
+  it("clears tool status when notifyResponse fires for same session", async () => {
+    notifications.register(mockBot as any, 123);
+    mockBot.api.sendMessage.mockResolvedValue({ message_id: 42 });
+
+    await notifications.notifyToolUse("myproject", "session-1", [
+      { id: "t1", name: "Read" },
+    ]);
+    // notifyResponse clears the tool status
+    await notifications.notifyResponse({
+      sessionId: "session-1",
+      projectName: "myproject",
+      cwd: "/tmp",
+      filePath: "/tmp/f.jsonl",
+      text: "Done",
+    });
+
+    // Next tool use for same session should send a NEW message (not edit)
+    mockBot.api.sendMessage.mockResolvedValue({ message_id: 99 });
+    await notifications.notifyToolUse("myproject", "session-1", [
+      { id: "t2", name: "Bash", command: "echo hi" },
+    ]);
+    // sendMessage should be called 3 times total: first tool, response text, new tool
+    expect(mockBot.api.sendMessage).toHaveBeenCalledTimes(3);
   });
 });

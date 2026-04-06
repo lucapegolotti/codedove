@@ -35,9 +35,13 @@ export class NotificationService {
   private bot: Bot | null = null;
   private chatId: number | null = null;
 
+  // Tool use status messages: one editable message per session
+  private toolStatus = new Map<string, { messageId: number; tools: { name: string; command?: string }[] }>();
+
   register(bot: Bot, chatId: number): void {
     this.bot = bot;
     this.chatId = chatId;
+    this.toolStatus.clear();
     mkdir(CODEDOVE_DIR, { recursive: true })
       .then(() => writeFile(CHAT_ID_PATH, String(chatId), "utf8"))
       .catch(() => {});
@@ -71,6 +75,7 @@ export class NotificationService {
   async notifyResponse(state: SessionResponseState): Promise<void> {
     if (!this.bot || !this.chatId) return;
     if (PLAN_APPROVAL_RE.test(state.text)) return;
+    this.toolStatus.delete(state.sessionId);
 
     const modelSuffix = state.model ? ` (${friendlyModelName(state.model)})` : "";
     const text = `\`${state.projectName}${modelSuffix}:\` ${state.text.replace(/:$/m, "")}`;
@@ -125,6 +130,49 @@ export class NotificationService {
       { reply_markup: keyboard }
     ).catch((err) => log({ message: `notifyImages error: ${err instanceof Error ? err.message : String(err)}` }));
   }
+
+  async notifyToolUse(
+    projectName: string,
+    sessionId: string,
+    tools: { id: string; name: string; command?: string }[]
+  ): Promise<void> {
+    if (!this.bot || !this.chatId) return;
+
+    const existing = this.toolStatus.get(sessionId);
+    const newEntries = tools.map((t) => ({
+      name: t.name,
+      ...(t.command ? { command: t.command } : {}),
+    }));
+
+    if (existing) {
+      existing.tools.push(...newEntries);
+      const text = this.formatToolStatus(projectName, existing.tools);
+      try {
+        await this.bot.api.editMessageText(this.chatId, existing.messageId, text, {
+          parse_mode: "Markdown",
+        });
+      } catch (err) {
+        log({ message: `editMessageText error: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    } else {
+      const text = this.formatToolStatus(projectName, newEntries);
+      try {
+        const sent = await this.bot.api.sendMessage(this.chatId, text, {
+          parse_mode: "Markdown",
+        });
+        this.toolStatus.set(sessionId, { messageId: sent.message_id, tools: newEntries });
+      } catch (err) {
+        log({ message: `notifyToolUse send error: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+  }
+
+  private formatToolStatus(projectName: string, tools: { name: string; command?: string }[]): string {
+    const parts = tools.map((t) =>
+      t.command ? `${t.name}(\`${t.command}\`)` : t.name
+    );
+    return `\`${projectName}:\` ${parts.join(" → ")}`;
+  }
 }
 
 // Singleton instance
@@ -156,6 +204,14 @@ export async function notifyPermission(req: PermissionRequest): Promise<void> {
 
 export async function notifyImages(images: DetectedImage[], key: string): Promise<void> {
   return notifications.notifyImages(images, key);
+}
+
+export async function notifyToolUse(
+  projectName: string,
+  sessionId: string,
+  tools: { id: string; name: string; command?: string }[]
+): Promise<void> {
+  return notifications.notifyToolUse(projectName, sessionId, tools);
 }
 
 export async function sendStartupMessage(bot: Bot): Promise<void> {
