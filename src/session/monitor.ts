@@ -258,9 +258,20 @@ export function watchForResponse(
     }, INACTIVITY_LIMIT);
   };
 
+  // Absolute cap: no watcher lives longer than 2 hours, even with activity.
+  const ABSOLUTE_TIMEOUT = 2 * 60 * 60_000;
+  const absoluteId = setTimeout(() => {
+    if (done) return;
+    done = true;
+    cleanup();
+    log({ message: `watchForResponse: session ${sessionId.slice(0, 8)} timed out after ${ABSOLUTE_TIMEOUT / 60_000}min (absolute)` });
+    onComplete?.();
+  }, ABSOLUTE_TIMEOUT);
+
   const cleanup = () => {
     clearTimeout(pingId);
     clearTimeout(inactivityId);
+    clearTimeout(absoluteId);
     watcher.close();
   };
 
