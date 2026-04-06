@@ -2,7 +2,7 @@ import { Context } from "grammy";
 import { log } from "../../logger.js";
 import { ATTACHED_SESSION_PATH, getAttachedSession, listSessions } from "../../session/history.js";
 import type { SessionResponseState, DetectedImage } from "../../session/monitor.js";
-import { notifyResponse, notifyImages, sendPing } from "../notifications.js";
+import { notifyResponse, notifyImages, sendPing, getSessionForMessage } from "../notifications.js";
 import { sendMarkdownReply } from "../utils.js";
 import { launchedPaneId } from "./sessions.js";
 import { findClaudePane, sendInterrupt, injectInput } from "../../session/tmux.js";
@@ -182,6 +182,51 @@ export async function processTextTurn(ctx: Context, chatId: number, text: string
       setTimerSetup(null);
       startTimer(frequencyMin, prompt);
       await ctx.reply(`Timer started. Every ${frequencyMin}min: "${prompt}"\nRun /timer to stop.`);
+      return;
+    }
+  }
+
+  // Reply-to routing: if user replies to a message from a specific session, route there
+  const replyToId = ctx.message?.reply_to_message?.message_id;
+  if (replyToId) {
+    const replySession = getSessionForMessage(replyToId);
+    if (replySession?.cwd) {
+      log({ chatId, message: `reply-to routing: message ${replyToId} → session ${replySession.sessionId.slice(0, 8)}` });
+      await writeFile(ATTACHED_SESSION_PATH, `${replySession.sessionId}\n${replySession.cwd}`, "utf8").catch(() => {});
+
+      const attached = { sessionId: replySession.sessionId, cwd: replySession.cwd };
+
+      if (watcherManager.isActive) {
+        const pane = await findClaudePane(attached.cwd);
+        if (pane.found) {
+          log({ message: `Interrupting Claude Code (Ctrl+C) for new message` });
+          watcherManager.stopAndFlush();
+          await sendInterrupt(pane.paneId);
+          await new Promise((r) => setTimeout(r, 600));
+        }
+      }
+
+      getStreamManager()?.pause(attached.cwd);
+
+      const preBaseline = await watcherManager.snapshotBaseline(attached.cwd);
+
+      log({ chatId, message: `inject: ${text.slice(0, 80)}` });
+      const result = await injectInput(attached.cwd, text, launchedPaneId);
+
+      if (!result.found) {
+        await sendMarkdownReply(ctx, "No Claude Code running at this session. Start it, or use /sessions to switch.");
+        return;
+      }
+
+      await ctx.replyWithChatAction("typing");
+      const typingInterval = setInterval(() => {
+        ctx.replyWithChatAction("typing").catch(() => {});
+      }, 4000);
+      await watcherManager.startInjectionWatcher(attached, chatId, undefined, () => {
+        clearInterval(typingInterval);
+        watcherManager.clear();
+        void getStreamManager()?.resume(attached.cwd);
+      }, preBaseline);
       return;
     }
   }
