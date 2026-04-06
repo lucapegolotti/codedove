@@ -1,11 +1,11 @@
 import { Context } from "grammy";
 import { log } from "../../logger.js";
-import { ATTACHED_SESSION_PATH, getAttachedSession, listSessions } from "../../session/history.js";
+import { ATTACHED_SESSION_PATH, getAttachedSession, listSessions, getLatestSessionFileForCwd } from "../../session/history.js";
 import type { SessionResponseState, DetectedImage } from "../../session/monitor.js";
 import { notifyResponse, notifyImages, sendPing, getSessionForMessage } from "../notifications.js";
 import { sendMarkdownReply } from "../utils.js";
 import { launchedPaneId } from "./sessions.js";
-import { findClaudePane, sendInterrupt, injectInput } from "../../session/tmux.js";
+import { findClaudePane, sendInterrupt, injectInput, listTmuxPanes, isClaudePane } from "../../session/tmux.js";
 import { pendingImages, pendingImageCount, clearPendingImageCount } from "./callbacks/index.js";
 import { InputFile } from "grammy";
 import { writeFile, mkdir, readFile } from "fs/promises";
@@ -189,7 +189,28 @@ export async function processTextTurn(ctx: Context, chatId: number, text: string
   // Reply-to routing: if user replies to a message from a specific session, route there
   const replyToId = ctx.message?.reply_to_message?.message_id;
   if (replyToId) {
-    const replySession = getSessionForMessage(replyToId);
+    let replySession = getSessionForMessage(replyToId);
+
+    // Fallback: if map lookup fails (e.g. bot restarted), parse project name from
+    // the replied-to message text and match to a running tmux session.
+    if (!replySession?.cwd) {
+      const replyText = ctx.message?.reply_to_message?.text ?? "";
+      const match = replyText.match(/^`([^(`]+?)(?:\s*\([^)]*\))?:`/);
+      if (match) {
+        const projectName = match[1].trim();
+        const allPanes = await listTmuxPanes();
+        const pane = allPanes.filter(isClaudePane).find(
+          (p) => (p.cwd.split("/").pop() || p.cwd) === projectName
+        );
+        if (pane) {
+          const latest = await getLatestSessionFileForCwd(pane.cwd);
+          if (latest) {
+            replySession = { sessionId: latest.sessionId, cwd: pane.cwd };
+          }
+        }
+      }
+    }
+
     if (replySession?.cwd) {
       log({ chatId, message: `reply-to routing: message ${replyToId} → session ${replySession.sessionId.slice(0, 8)}` });
       await writeFile(ATTACHED_SESSION_PATH, `${replySession.sessionId}\n${replySession.cwd}`, "utf8").catch(() => {});
