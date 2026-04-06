@@ -1,7 +1,7 @@
 import { log } from "../logger.js";
 import { ATTACHED_SESSION_PATH, getLatestSessionFileForCwd } from "./history.js";
 import { watchForResponse, getFileSize } from "./monitor.js";
-import { notifyResponse, notifyImages, sendPing } from "../telegram/notifications.js";
+import { notifyResponse, notifyImages, sendPing, notifyToolUse } from "../telegram/notifications.js";
 import type { SessionResponseState, DetectedImage } from "./monitor.js";
 import { writeFile } from "fs/promises";
 
@@ -97,6 +97,8 @@ export class WatcherManager {
     const watchedCwd = attached.cwd;
     const pendingImages = this.pendingImages;
 
+    const injectionProjectName = attached.cwd.split("/").pop() || attached.cwd;
+
     this.activeStop = watchForResponse(
       filePath,
       baseline,
@@ -112,7 +114,8 @@ export class WatcherManager {
         const key = `${Date.now()}`;
         pendingImages.set(key, images);
         await notifyImages(images, key);
-      }
+      },
+      async (tools) => { await notifyToolUse(injectionProjectName, latestSessionId, tools); }
     );
 
     // Start polling for session rotation (compaction / plan approval) in the background.
@@ -145,6 +148,12 @@ export class WatcherManager {
           () => {
             this.activeOnComplete = null;
             onComplete?.();
+          },
+          undefined,
+          async (tools) => {
+            const pName = latest.filePath.split("/").slice(-2, -1)[0] || "";
+            const decoded = pName.replace(/^-/, "").replace(/-/g, "/").split("/").pop() || pName;
+            await notifyToolUse(decoded, latest.sessionId, tools);
           }
         );
         return;

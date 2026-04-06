@@ -14,6 +14,7 @@ vi.mock("../telegram/notifications.js", () => ({
   notifyResponse: vi.fn(),
   notifyImages: vi.fn(),
   sendPing: vi.fn(),
+  notifyToolUse: vi.fn(),
 }));
 
 vi.mock("../logger.js", () => ({ log: vi.fn() }));
@@ -205,7 +206,8 @@ describe("WatcherManager", () => {
         expect.any(Function),
         expect.any(Function),
         expect.any(Function),
-        expect.any(Function)
+        expect.any(Function),
+        expect.any(Function),
       );
     });
 
@@ -274,7 +276,8 @@ describe("WatcherManager", () => {
         expect.any(Function),
         expect.any(Function),
         expect.any(Function),
-        expect.any(Function)
+        expect.any(Function),
+        expect.any(Function),
       );
     });
   });
@@ -482,6 +485,8 @@ describe("WatcherManager", () => {
         0,
         expect.any(Function),
         expect.any(Function),
+        expect.any(Function),
+        undefined,
         expect.any(Function),
       );
     });

@@ -16,6 +16,7 @@ vi.mock("./monitor.js", () => ({
 
 vi.mock("../telegram/notifications.js", () => ({
   notifyResponse: vi.fn(),
+  notifyToolUse: vi.fn(),
 }));
 
 vi.mock("../logger.js", () => ({ log: vi.fn() }));
@@ -54,6 +55,8 @@ describe("SessionStreamManager", () => {
       expect(watchForResponse).toHaveBeenCalledWith(
         "/tmp/a.jsonl",
         500,
+        expect.any(Function),
+        undefined,
         expect.any(Function),
         undefined,
         expect.any(Function),
@@ -180,6 +183,8 @@ describe("SessionStreamManager", () => {
         expect.any(Function),
         undefined,
         expect.any(Function),
+        undefined,
+        expect.any(Function),
       );
 
       manager.stop();
@@ -222,6 +227,8 @@ describe("SessionStreamManager", () => {
       expect(watchForResponse).toHaveBeenLastCalledWith(
         "/tmp/a.jsonl",
         900,
+        expect.any(Function),
+        undefined,
         expect.any(Function),
         undefined,
         expect.any(Function),

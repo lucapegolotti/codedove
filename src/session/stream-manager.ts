@@ -2,7 +2,7 @@ import { log } from "../logger.js";
 import { listTmuxPanes, isClaudePane } from "./tmux.js";
 import { getLatestSessionFileForCwd } from "./history.js";
 import { watchForResponse, getFileSize } from "./monitor.js";
-import { notifyResponse } from "../telegram/notifications.js";
+import { notifyResponse, notifyToolUse } from "../telegram/notifications.js";
 
 const DISCOVERY_INTERVAL = 30_000;
 
@@ -104,12 +104,16 @@ export class SessionStreamManager {
       await this.startWatcher(cwd, latest.filePath);
     };
 
+    const projectName = cwd.split("/").pop() || cwd;
+
     const stop = watchForResponse(
       filePath,
       baseline,
       notifyResponse,
       undefined,
       onComplete,
+      undefined,
+      async (tools) => { await notifyToolUse(projectName, sessionId, tools); }
     );
 
     this.streams.set(cwd, { cwd, filePath, sessionId, stop, paused: false });
