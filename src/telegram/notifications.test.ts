@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { sendStartupMessage, registerForNotifications, notifyResponse, notifyPermission, notifyWaiting, notifyImages, sendPing, resolveWaitingAction, friendlyModelName, notifications } from "./notifications.js";
+import { sendStartupMessage, registerForNotifications, notifyResponse, notifyPermission, notifyWaiting, notifyImages, sendPing, resolveWaitingAction, friendlyModelName, notifications, notifyToolUse } from "./notifications.js";
 import { WaitingType } from "../session/monitor.js";
 import { splitMessage } from "./utils.js";
 
@@ -679,5 +679,79 @@ describe("notifyToolUse", () => {
     ]);
     // sendMessage should be called 3 times total: first tool, response text, new tool
     expect(mockBot.api.sendMessage).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// message-to-session tracking
+// ---------------------------------------------------------------------------
+
+describe("message-to-session tracking", () => {
+  let mockBot: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBot = {
+      api: {
+        sendMessage: vi.fn().mockResolvedValue({ message_id: 1 }),
+        editMessageText: vi.fn().mockResolvedValue({}),
+      },
+    };
+  });
+
+  it("tracks message_id from notifyResponse", async () => {
+    notifications.register(mockBot as any, 123);
+    mockBot.api.sendMessage.mockResolvedValue({ message_id: 55 });
+
+    await notifications.notifyResponse({
+      sessionId: "sess-1",
+      projectName: "myproject",
+      cwd: "/tmp/proj",
+      filePath: "/tmp/f.jsonl",
+      text: "Hello",
+    });
+
+    expect(notifications.getSessionForMessage(55)).toEqual({
+      sessionId: "sess-1",
+      cwd: "/tmp/proj",
+    });
+  });
+
+  it("tracks message_id from notifyToolUse", async () => {
+    notifications.register(mockBot as any, 123);
+    mockBot.api.sendMessage.mockResolvedValue({ message_id: 66 });
+
+    await notifications.notifyToolUse("myproject", "sess-2", [
+      { id: "t1", name: "Bash", command: "ls" },
+    ]);
+
+    expect(notifications.getSessionForMessage(66)).toEqual({
+      sessionId: "sess-2",
+      cwd: undefined,
+    });
+  });
+
+  it("returns undefined for unknown message_id", () => {
+    notifications.register(mockBot as any, 123);
+    expect(notifications.getSessionForMessage(999)).toBeUndefined();
+  });
+
+  it("evicts oldest entries when map exceeds 500", async () => {
+    notifications.register(mockBot as any, 123);
+    let msgId = 0;
+    mockBot.api.sendMessage.mockImplementation(async () => ({ message_id: ++msgId }));
+
+    for (let i = 0; i < 501; i++) {
+      await notifications.notifyResponse({
+        sessionId: `sess-${i}`,
+        projectName: "p",
+        cwd: `/tmp/${i}`,
+        filePath: "/tmp/f.jsonl",
+        text: "hi",
+      });
+    }
+
+    expect(notifications.getSessionForMessage(1)).toBeUndefined();
+    expect(notifications.getSessionForMessage(501)).toBeDefined();
   });
 });

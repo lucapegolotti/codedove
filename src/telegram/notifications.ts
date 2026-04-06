@@ -38,10 +38,14 @@ export class NotificationService {
   // Tool use status messages: one editable message per session
   private toolStatus = new Map<string, { messageId: number; tools: { name: string; command?: string }[] }>();
 
+  private messageToSession = new Map<number, { sessionId: string; cwd?: string }>();
+  private static MAX_TRACKED_MESSAGES = 500;
+
   register(bot: Bot, chatId: number): void {
     this.bot = bot;
     this.chatId = chatId;
     this.toolStatus.clear();
+    this.messageToSession.clear();
     mkdir(CODEDOVE_DIR, { recursive: true })
       .then(() => writeFile(CHAT_ID_PATH, String(chatId), "utf8"))
       .catch(() => {});
@@ -80,10 +84,29 @@ export class NotificationService {
     const modelSuffix = state.model ? ` (${friendlyModelName(state.model)})` : "";
     const text = `\`${state.projectName}${modelSuffix}:\` ${state.text.replace(/:$/m, "")}`;
     try {
-      await sendMarkdownMessage(this.bot, this.chatId, text);
+      const sent = await this.bot.api.sendMessage(this.chatId, text, { parse_mode: "Markdown" });
+      this.trackMessage(sent.message_id, state.sessionId, state.cwd);
       log({ chatId: this.chatId, message: `notified response: ${state.projectName} (${state.text.slice(0, 60)})` });
-    } catch (err) {
-      log({ message: `failed to send response notification: ${err instanceof Error ? err.message : String(err)}` });
+    } catch {
+      try {
+        const sent = await this.bot.api.sendMessage(this.chatId, text);
+        this.trackMessage(sent.message_id, state.sessionId, state.cwd);
+        log({ chatId: this.chatId, message: `notified response: ${state.projectName} (${state.text.slice(0, 60)})` });
+      } catch (err) {
+        log({ message: `failed to send response notification: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+  }
+
+  getSessionForMessage(messageId: number): { sessionId: string; cwd?: string } | undefined {
+    return this.messageToSession.get(messageId);
+  }
+
+  private trackMessage(messageId: number, sessionId: string, cwd?: string): void {
+    this.messageToSession.set(messageId, { sessionId, cwd });
+    if (this.messageToSession.size > NotificationService.MAX_TRACKED_MESSAGES) {
+      const firstKey = this.messageToSession.keys().next().value!;
+      this.messageToSession.delete(firstKey);
     }
   }
 
@@ -161,6 +184,7 @@ export class NotificationService {
           parse_mode: "Markdown",
         });
         this.toolStatus.set(sessionId, { messageId: sent.message_id, tools: newEntries });
+        this.trackMessage(sent.message_id, sessionId);
       } catch (err) {
         log({ message: `notifyToolUse send error: ${err instanceof Error ? err.message : String(err)}` });
       }
@@ -212,6 +236,10 @@ export async function notifyToolUse(
   tools: { id: string; name: string; command?: string }[]
 ): Promise<void> {
   return notifications.notifyToolUse(projectName, sessionId, tools);
+}
+
+export function getSessionForMessage(messageId: number): { sessionId: string; cwd?: string } | undefined {
+  return notifications.getSessionForMessage(messageId);
 }
 
 export async function sendStartupMessage(bot: Bot): Promise<void> {
