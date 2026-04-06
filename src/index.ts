@@ -3,6 +3,7 @@ import { BOT_COMMANDS } from "./telegram/handlers/commands.js";
 import { loadConfig } from "./config/config.js";
 import { startMonitor } from "./session/monitor.js";
 import { watchPermissionRequests } from "./session/permissions.js";
+import { SessionStreamManager, setStreamManager } from "./session/stream-manager.js";
 import { notifyWaiting, sendStartupMessage, notifyPermission } from "./telegram/notifications.js";
 import { existsSync } from "fs";
 import { writeFile, mkdir } from "fs/promises";
@@ -18,7 +19,7 @@ if (existsSync(envPath)) process.loadEnvFile(envPath);
 // the "cannot launch inside another Claude Code session" guard.
 delete process.env.CLAUDECODE;
 
-const required = ["TELEGRAM_BOT_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] as const;
+const required = ["TELEGRAM_BOT_TOKEN"] as const;
 for (const key of required) {
   if (!process.env[key]) throw new Error(`Missing required env var: ${key}`);
 }
@@ -39,15 +40,22 @@ const stopMonitor = startMonitor(notifyWaiting);
 // Start permission request watcher
 const stopPermissionWatcher = watchPermissionRequests(notifyPermission);
 
+// Start session stream manager
+const streamManager = new SessionStreamManager();
+setStreamManager(streamManager);
+void streamManager.start();
+
 // Graceful shutdown
 process.on("SIGINT", () => {
   stopMonitor();
   stopPermissionWatcher();
+  streamManager.stop();
   process.exit(0);
 });
 process.on("SIGTERM", () => {
   stopMonitor();
   stopPermissionWatcher();
+  streamManager.stop();
   process.exit(0);
 });
 
