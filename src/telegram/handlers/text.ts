@@ -11,6 +11,7 @@ import { InputFile } from "grammy";
 import { writeFile, mkdir, readFile } from "fs/promises";
 import { homedir } from "os";
 import { WatcherManager } from "../../session/watcher-manager.js";
+import { getStreamManager } from "../../session/stream-manager.js";
 import { getTimerSetup, setTimerSetup, startTimer } from "./timer.js";
 
 // Singleton watcher manager — shared with commands.ts via re-exports
@@ -47,6 +48,8 @@ export async function fetchAndOfferImages(
       await new Promise((r) => setTimeout(r, 600));
     }
   }
+
+  getStreamManager()?.pause(attached.cwd);
 
   // Snapshot baseline BEFORE injection
   const preBaseline = await watcherManager.snapshotBaseline(attached.cwd);
@@ -102,7 +105,10 @@ export async function fetchAndOfferImages(
     attached,
     chatId,
     onResponse,
-    () => clearInterval(typingInterval),
+    () => {
+      clearInterval(typingInterval);
+      void getStreamManager()?.resume(attached.cwd);
+    },
     preBaseline
   );
 }
@@ -195,6 +201,9 @@ export async function processTextTurn(ctx: Context, chatId: number, text: string
     }
   }
 
+  // Pause stream watcher so injection watcher handles this session exclusively
+  if (attached) getStreamManager()?.pause(attached.cwd);
+
   if (!attached) {
     await sendMarkdownReply(ctx, "No session attached. Use /sessions to pick one.");
     return;
@@ -216,5 +225,8 @@ export async function processTextTurn(ctx: Context, chatId: number, text: string
   const typingInterval = setInterval(() => {
     ctx.replyWithChatAction("typing").catch(() => {});
   }, 4000);
-  await watcherManager.startInjectionWatcher(attached, chatId, undefined, () => clearInterval(typingInterval), preBaseline);
+  await watcherManager.startInjectionWatcher(attached, chatId, undefined, () => {
+    clearInterval(typingInterval);
+    void getStreamManager()?.resume(attached.cwd);
+  }, preBaseline);
 }
