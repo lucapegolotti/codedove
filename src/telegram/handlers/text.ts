@@ -107,6 +107,7 @@ export async function fetchAndOfferImages(
     onResponse,
     () => {
       clearInterval(typingInterval);
+      watcherManager.clear();
       void getStreamManager()?.resume(attached.cwd);
     },
     preBaseline
@@ -227,6 +228,10 @@ export async function processTextTurn(ctx: Context, chatId: number, text: string
   }, 4000);
   await watcherManager.startInjectionWatcher(attached, chatId, undefined, () => {
     clearInterval(typingInterval);
+    // Clear injection watcher before resuming stream — pollForPostCompactionSession
+    // can fire onComplete while the injection's watchForResponse is still running,
+    // which would cause duplicate messages if the stream watcher also starts.
+    watcherManager.clear();
     void getStreamManager()?.resume(attached.cwd);
   }, preBaseline);
 }
