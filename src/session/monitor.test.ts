@@ -443,6 +443,48 @@ describe("watchForResponse", () => {
     stop();
   });
 
+  it("uses adapter methods when provided", async () => {
+    const file = join(tmpdir(), `cv-watch-adapter-${Date.now()}.jsonl`);
+    await writeFile(file, "");
+
+    const parseCalls: string[][] = [];
+    const adapter = {
+      name: "test-cli",
+      projectsPath: "/tmp",
+      supportsImageDetection: false,
+      isAgentPane: () => false,
+      getLatestSessionFileForCwd: async () => null,
+      parseAssistantText: (lines: string[]) => {
+        parseCalls.push(lines);
+        return { text: "ADAPTER-TEXT", cwd: "/tmp/from-adapter", model: "test-model" };
+      },
+      findResultEvent: () => false,
+      extractToolUses: () => [],
+      friendlyModelName: (m: string | undefined) => m ?? "test",
+    };
+
+    const responses: { text: string; cliName?: string }[] = [];
+    const stop = watchForResponse(
+      file,
+      0,
+      async (state) => { responses.push({ text: state.text, cliName: state.cliName }); },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adapter
+    );
+
+    await appendFile(file, "something\n");
+    await new Promise((r) => setTimeout(r, 500));
+
+    expect(parseCalls.length).toBeGreaterThan(0);
+    expect(responses[0]?.text).toBe("ADAPTER-TEXT");
+    expect(responses[0]?.cliName).toBe("test-cli");
+
+    stop();
+  });
+
   it("calls onPing after 60s with no response text", async () => {
     // This test is hard to run with real timers, so we verify the onPing path
     // at a structural level — the important thing is that watchForResponse

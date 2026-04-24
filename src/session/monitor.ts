@@ -3,6 +3,7 @@ import { readFile, realpath, stat } from "fs/promises";
 import { PROJECTS_PATH } from "./history.js";
 import { log } from "../logger.js";
 import { parseAssistantText, extractCwd, findResultEvent, findExitPlanMode, extractWrittenImagePaths, extractToolUses, type ToolUseEntry } from "./jsonl.js";
+import type { SessionAdapter } from "./adapter.js";
 
 export enum WaitingType {
   YES_NO = "YES_NO",
@@ -29,6 +30,7 @@ export type SessionResponseState = {
   filePath: string;
   text: string;
   model?: string;
+  cliName?: string;
 };
 
 export type ResponseCallback = (state: SessionResponseState) => Promise<void>;
@@ -221,13 +223,19 @@ export function watchForResponse(
   onPing?: () => void,
   onComplete?: () => void,
   onImages?: ImagesCallback,
-  onToolUse?: ToolUseCallback
+  onToolUse?: ToolUseCallback,
+  adapter?: SessionAdapter
 ): () => void {
   const parts = filePath.split("/");
   const sessionId = parts[parts.length - 1].replace(".jsonl", "");
   const projectDir = parts[parts.length - 2];
   const projectName = decodeProjectName(projectDir);
   const cwd = parts.slice(0, -2).join("/"); // approximation; real cwd read from file
+
+  const _parseAssistantText = adapter?.parseAssistantText.bind(adapter) ?? parseAssistantText;
+  const _findResultEvent = adapter?.findResultEvent.bind(adapter) ?? findResultEvent;
+  const _extractToolUses = adapter?.extractToolUses.bind(adapter) ?? extractToolUses;
+  const _supportsImages = adapter ? adapter.supportsImageDetection : true;
 
   let done = false;
   let lastSentText: string | null = null;
@@ -297,14 +305,14 @@ export function watchForResponse(
         const lines = newContent.split("\n").filter(Boolean);
 
         // Find the latest assistant text written so far
-        const parsed = parseAssistantText(lines);
+        const parsed = _parseAssistantText(lines);
         const latestText = parsed.text;
         const latestCwd = parsed.cwd ?? cwd;
         const latestModel = parsed.model;
 
         // Detect and report new tool_use blocks
         if (onToolUse) {
-          const allTools = extractToolUses(lines);
+          const allTools = _extractToolUses(lines);
           const newTools = allTools.filter((t) => !reportedToolIds.has(t.id));
           if (newTools.length > 0) {
             for (const t of newTools) reportedToolIds.add(t.id);
@@ -315,14 +323,14 @@ export function watchForResponse(
         }
 
         // Collect image files written via the Write tool
-        if (onImages) {
+        if (onImages && _supportsImages) {
           for (const fp of extractWrittenImagePaths(lines)) {
             writtenImagePaths.add(fp);
           }
         }
 
         // Detect Claude Code turn completion via the result event (written by Stop hook)
-        const isComplete = findResultEvent(lines);
+        const isComplete = _findResultEvent(lines);
 
         if (isComplete && !completionScheduled) {
           completionScheduled = true;
@@ -333,7 +341,7 @@ export function watchForResponse(
           if (latestText && latestText !== lastSentText) {
             lastSentText = latestText;
             log({ message: `watchForResponse firing for session ${sessionId.slice(0, 8)}: ${latestText.slice(0, 60)}` });
-            pendingResponse = onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText, model: latestModel }).catch(
+            pendingResponse = onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText, model: latestModel, cliName: adapter?.name }).catch(
               (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
             );
             await pendingResponse;
@@ -346,11 +354,11 @@ export function watchForResponse(
             try {
               const finalBuf = await readFile(filePath);
               const finalLines = finalBuf.subarray(baselineSize).toString("utf8").split("\n").filter(Boolean);
-              const final = parseAssistantText(finalLines);
+              const final = _parseAssistantText(finalLines);
               if (final.text && final.text !== lastSentText) {
                 lastSentText = final.text;
                 log({ message: `watchForResponse final-flush for session ${sessionId.slice(0, 8)}: ${final.text.slice(0, 60)}` });
-                await onResponse({ sessionId, projectName, cwd: final.cwd ?? cwd, filePath, text: final.text, model: final.model }).catch(
+                await onResponse({ sessionId, projectName, cwd: final.cwd ?? cwd, filePath, text: final.text, model: final.model, cliName: adapter?.name }).catch(
                   (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
                 );
               }
@@ -358,7 +366,7 @@ export function watchForResponse(
             await pendingResponse;
             log({ message: `watchForResponse: session ${sessionId.slice(0, 8)} completed (result event)` });
             onComplete?.();
-            if (onImages) {
+            if (onImages && _supportsImages) {
               // Read any image files written via Write tool and add to detected list
               for (const imgPath of writtenImagePaths) {
                 try {
@@ -387,7 +395,7 @@ export function watchForResponse(
         // Fire immediately — no debounce needed since the Stop hook signals completion
         lastSentText = latestText;
         log({ message: `watchForResponse firing for session ${sessionId.slice(0, 8)}: ${latestText.slice(0, 60)}` });
-        pendingResponse = onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText, model: latestModel }).catch(
+        pendingResponse = onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText, model: latestModel, cliName: adapter?.name }).catch(
           (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
         );
         await pendingResponse;
