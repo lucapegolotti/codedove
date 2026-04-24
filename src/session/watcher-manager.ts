@@ -1,14 +1,17 @@
 import { log } from "../logger.js";
-import { ATTACHED_SESSION_PATH, getLatestSessionFileForCwd } from "./history.js";
+import { ATTACHED_SESSION_PATH } from "./history.js";
 import { watchForResponse, getFileSize } from "./monitor.js";
 import { notifyResponse, notifyImages, sendPing, notifyToolUse } from "../telegram/notifications.js";
 import type { SessionResponseState, DetectedImage } from "./monitor.js";
+import type { SessionAdapter } from "./adapter.js";
+import { adapterForCwd, adapters as defaultAdapters } from "./adapters/index.js";
 import { writeFile } from "fs/promises";
 
 type PendingImagesMap = Map<string, DetectedImage[]>;
 
 export class WatcherManager {
   private activeStop: (() => void) | null = null;
+  private activeAdapter: SessionAdapter | null = null;
   private activeOnComplete: (() => void) | null = null;
   private compactPollGeneration = 0;
   private pendingImages: PendingImagesMap;
@@ -25,6 +28,7 @@ export class WatcherManager {
     this.activeStop?.();
     this.activeStop = null;
     this.activeOnComplete = null;
+    this.activeAdapter = null;
   }
 
   /** Stop the current watcher and fire its onComplete (for interrupt flow). */
@@ -40,10 +44,10 @@ export class WatcherManager {
   async snapshotBaseline(
     cwd: string
   ): Promise<{ filePath: string; sessionId: string; size: number } | null> {
-    const latest = await getLatestSessionFileForCwd(cwd);
-    if (!latest) return null;
-    const size = await getFileSize(latest.filePath);
-    return { ...latest, size };
+    const resolved = await adapterForCwd(cwd);
+    if (!resolved) return null;
+    const size = await getFileSize(resolved.file.filePath);
+    return { ...resolved.file, size };
   }
 
   async startInjectionWatcher(
@@ -62,23 +66,29 @@ export class WatcherManager {
     // injection know to abort.
     const myGeneration = ++this.compactPollGeneration;
 
+    let adapter: SessionAdapter;
     let filePath: string;
     let latestSessionId: string;
     let baseline: number;
 
     if (preBaseline) {
+      const resolved = await adapterForCwd(attached.cwd);
+      adapter = resolved?.adapter ?? defaultAdapters[0];
       ({ filePath, sessionId: latestSessionId, size: baseline } = preBaseline);
     } else {
-      const latest = await getLatestSessionFileForCwd(attached.cwd);
-      if (!latest) {
-        log({ message: `watchForResponse: could not find JSONL for cwd ${attached.cwd}` });
+      const resolved = await adapterForCwd(attached.cwd);
+      if (!resolved) {
+        log({ message: `watchForResponse: could not find session for cwd ${attached.cwd}` });
         onComplete?.();
         return;
       }
-      filePath = latest.filePath;
-      latestSessionId = latest.sessionId;
+      adapter = resolved.adapter;
+      filePath = resolved.file.filePath;
+      latestSessionId = resolved.file.sessionId;
       baseline = await getFileSize(filePath);
     }
+
+    this.activeAdapter = adapter;
 
     // If Claude Code restarted and created a new session, update the attached record
     if (latestSessionId !== attached.sessionId) {
@@ -115,7 +125,8 @@ export class WatcherManager {
         pendingImages.set(key, images);
         await notifyImages(images, key);
       },
-      async (tools) => { await notifyToolUse(injectionProjectName, latestSessionId, tools); }
+      async (tools) => { await notifyToolUse(injectionProjectName, latestSessionId, tools); },
+      adapter
     );
 
     // Start polling for session rotation (compaction / plan approval) in the background.
@@ -129,12 +140,14 @@ export class WatcherManager {
     onResponse?: (state: SessionResponseState) => Promise<void>,
     onComplete?: () => void
   ): Promise<void> {
+    const adapter = this.activeAdapter;
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       await new Promise<void>((r) => setTimeout(r, 3_000));
       if (this.compactPollGeneration !== generation) return;
 
-      const latest = await getLatestSessionFileForCwd(cwd);
+      if (!adapter) continue;
+      const latest = await adapter.getLatestSessionFileForCwd(cwd);
       if (latest && latest.filePath !== oldFilePath) {
         log({ message: `post-compact: new session found ${latest.sessionId.slice(0, 8)}, restarting watcher` });
         await writeFile(ATTACHED_SESSION_PATH, `${latest.sessionId}\n${cwd}`, "utf8").catch(() => {});
@@ -154,7 +167,8 @@ export class WatcherManager {
             const pName = latest.filePath.split("/").slice(-2, -1)[0] || "";
             const decoded = pName.replace(/^-/, "").replace(/-/g, "/").split("/").pop() || pName;
             await notifyToolUse(decoded, latest.sessionId, tools);
-          }
+          },
+          adapter
         );
         return;
       }

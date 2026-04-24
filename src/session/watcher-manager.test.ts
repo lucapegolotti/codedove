@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("./history.js", () => ({
   ATTACHED_SESSION_PATH: "/tmp/test-attached",
-  getLatestSessionFileForCwd: vi.fn(),
+}));
+
+vi.mock("./adapters/index.js", () => ({
+  adapters: [],
+  adapterForCwd: vi.fn(),
+  adapterForPane: vi.fn(),
 }));
 
 vi.mock("./monitor.js", () => ({
@@ -24,10 +29,26 @@ vi.mock("fs/promises", () => ({
 }));
 
 import { WatcherManager } from "./watcher-manager.js";
-import { getLatestSessionFileForCwd } from "./history.js";
+import { adapterForCwd } from "./adapters/index.js";
 import { watchForResponse, getFileSize } from "./monitor.js";
 import { notifyResponse, notifyImages, sendPing } from "../telegram/notifications.js";
 import { writeFile } from "fs/promises";
+
+function mockResolvedAdapter(filePath: string, sessionId: string) {
+  const adapter = {
+    name: "claude",
+    projectsPath: "/claude",
+    supportsImageDetection: true,
+    isAgentPane: () => true,
+    getLatestSessionFileForCwd: vi.fn().mockResolvedValue({ filePath, sessionId }),
+    parseAssistantText: () => ({ text: null, cwd: null, model: undefined }),
+    findResultEvent: () => false,
+    extractToolUses: () => [],
+    friendlyModelName: () => "claude",
+  };
+  vi.mocked(adapterForCwd).mockResolvedValue({ adapter: adapter as any, file: { filePath, sessionId } });
+  return adapter;
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -51,10 +72,7 @@ describe("WatcherManager", () => {
       const manager = createManager();
       const stopFn = vi.fn();
       vi.mocked(watchForResponse).mockReturnValue(stopFn);
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session.jsonl",
-        sessionId: "session-abc",
-      });
+      mockResolvedAdapter("/tmp/session.jsonl", "session-abc");
 
       await manager.startInjectionWatcher(
         { sessionId: "session-abc", cwd: "/tmp/project" },
@@ -75,10 +93,7 @@ describe("WatcherManager", () => {
       const manager = createManager();
       const stopFn = vi.fn();
       vi.mocked(watchForResponse).mockReturnValue(stopFn);
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session.jsonl",
-        sessionId: "session-abc",
-      });
+      mockResolvedAdapter("/tmp/session.jsonl", "session-abc");
 
       let completeCalled = false;
       await manager.startInjectionWatcher(
@@ -106,10 +121,7 @@ describe("WatcherManager", () => {
   describe("snapshotBaseline", () => {
     it("returns filePath, sessionId, and size from latest session", async () => {
       const manager = createManager();
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session.jsonl",
-        sessionId: "session-abc",
-      });
+      mockResolvedAdapter("/tmp/session.jsonl", "session-abc");
       vi.mocked(getFileSize).mockResolvedValue(500);
 
       const result = await manager.snapshotBaseline("/tmp/project");
@@ -119,13 +131,13 @@ describe("WatcherManager", () => {
         sessionId: "session-abc",
         size: 500,
       });
-      expect(getLatestSessionFileForCwd).toHaveBeenCalledWith("/tmp/project");
+      expect(adapterForCwd).toHaveBeenCalledWith("/tmp/project");
       expect(getFileSize).toHaveBeenCalledWith("/tmp/session.jsonl");
     });
 
     it("returns null when no session exists", async () => {
       const manager = createManager();
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue(null);
+      vi.mocked(adapterForCwd).mockResolvedValue(null);
 
       const result = await manager.snapshotBaseline("/tmp/project");
 
@@ -138,10 +150,7 @@ describe("WatcherManager", () => {
       const manager = createManager();
       const stopFn1 = vi.fn();
       const stopFn2 = vi.fn();
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session.jsonl",
-        sessionId: "session-abc",
-      });
+      mockResolvedAdapter("/tmp/session.jsonl", "session-abc");
       vi.mocked(watchForResponse)
         .mockReturnValueOnce(stopFn1)
         .mockReturnValueOnce(stopFn2);
@@ -166,7 +175,7 @@ describe("WatcherManager", () => {
 
     it("calls onComplete when no session file exists", async () => {
       const manager = createManager();
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue(null);
+      vi.mocked(adapterForCwd).mockResolvedValue(null);
 
       let completeCalled = false;
       await manager.startInjectionWatcher(
@@ -183,6 +192,7 @@ describe("WatcherManager", () => {
     it("uses preBaseline when provided instead of looking up session", async () => {
       const manager = createManager();
       vi.mocked(watchForResponse).mockReturnValue(vi.fn());
+      mockResolvedAdapter("/tmp/pre-session.jsonl", "pre-session-id");
 
       const preBaseline = {
         filePath: "/tmp/pre-session.jsonl",
@@ -198,8 +208,6 @@ describe("WatcherManager", () => {
         preBaseline
       );
 
-      // Should not call getLatestSessionFileForCwd since preBaseline is provided
-      expect(getLatestSessionFileForCwd).not.toHaveBeenCalled();
       expect(watchForResponse).toHaveBeenCalledWith(
         "/tmp/pre-session.jsonl",
         200,
@@ -208,16 +216,14 @@ describe("WatcherManager", () => {
         expect.any(Function),
         expect.any(Function),
         expect.any(Function),
+        expect.any(Object),
       );
     });
 
     it("sets isActive to true after starting", async () => {
       const manager = createManager();
       vi.mocked(watchForResponse).mockReturnValue(vi.fn());
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session.jsonl",
-        sessionId: "session-abc",
-      });
+      mockResolvedAdapter("/tmp/session.jsonl", "session-abc");
 
       await manager.startInjectionWatcher(
         { sessionId: "session-abc", cwd: "/tmp/project" },
@@ -232,10 +238,7 @@ describe("WatcherManager", () => {
     it("increments generation to prevent stale polls from previous injections", async () => {
       const manager = createManager();
       vi.mocked(watchForResponse).mockReturnValue(vi.fn());
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session.jsonl",
-        sessionId: "session-abc",
-      });
+      mockResolvedAdapter("/tmp/session.jsonl", "session-abc");
 
       // Start first watcher
       await manager.startInjectionWatcher(
@@ -258,10 +261,7 @@ describe("WatcherManager", () => {
     it("looks up the latest session when no preBaseline is provided", async () => {
       const manager = createManager();
       vi.mocked(watchForResponse).mockReturnValue(vi.fn());
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/looked-up.jsonl",
-        sessionId: "looked-up-id",
-      });
+      mockResolvedAdapter("/tmp/looked-up.jsonl", "looked-up-id");
       vi.mocked(getFileSize).mockResolvedValue(300);
 
       await manager.startInjectionWatcher(
@@ -269,7 +269,7 @@ describe("WatcherManager", () => {
         123
       );
 
-      expect(getLatestSessionFileForCwd).toHaveBeenCalledWith("/tmp/project");
+      expect(adapterForCwd).toHaveBeenCalledWith("/tmp/project");
       expect(watchForResponse).toHaveBeenCalledWith(
         "/tmp/looked-up.jsonl",
         300,
@@ -278,6 +278,7 @@ describe("WatcherManager", () => {
         expect.any(Function),
         expect.any(Function),
         expect.any(Function),
+        expect.any(Object),
       );
     });
   });
@@ -299,10 +300,7 @@ describe("WatcherManager", () => {
           return vi.fn();
         }
       );
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session.jsonl",
-        sessionId: "session-abc",
-      });
+      mockResolvedAdapter("/tmp/session.jsonl", "session-abc");
       vi.mocked(getFileSize).mockResolvedValue(100);
 
       const customOnResponse = vi.fn();
@@ -339,10 +337,7 @@ describe("WatcherManager", () => {
           return vi.fn();
         }
       );
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session.jsonl",
-        sessionId: "session-abc",
-      });
+      mockResolvedAdapter("/tmp/session.jsonl", "session-abc");
       vi.mocked(getFileSize).mockResolvedValue(100);
 
       await manager.startInjectionWatcher(
@@ -366,10 +361,7 @@ describe("WatcherManager", () => {
           return vi.fn();
         }
       );
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session.jsonl",
-        sessionId: "session-abc",
-      });
+      mockResolvedAdapter("/tmp/session.jsonl", "session-abc");
       vi.mocked(getFileSize).mockResolvedValue(100);
 
       await manager.startInjectionWatcher(
@@ -394,10 +386,7 @@ describe("WatcherManager", () => {
           return vi.fn();
         }
       );
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session.jsonl",
-        sessionId: "session-abc",
-      });
+      mockResolvedAdapter("/tmp/session.jsonl", "session-abc");
       vi.mocked(getFileSize).mockResolvedValue(100);
 
       await manager.startInjectionWatcher(
@@ -416,10 +405,7 @@ describe("WatcherManager", () => {
     it("updates attached session file when sessionId rotates", async () => {
       const manager = createManager();
       vi.mocked(watchForResponse).mockReturnValue(vi.fn());
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/new-session.jsonl",
-        sessionId: "new-session-id",
-      });
+      mockResolvedAdapter("/tmp/new-session.jsonl", "new-session-id");
       vi.mocked(getFileSize).mockResolvedValue(0);
 
       await manager.startInjectionWatcher(
@@ -452,10 +438,9 @@ describe("WatcherManager", () => {
         .mockReturnValueOnce(newStop);
 
       // Initial: returns old session
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/old-session.jsonl",
-        sessionId: "old-session",
-      });
+      const adapter = mockResolvedAdapter("/tmp/old-session.jsonl", "old-session");
+      adapter.getLatestSessionFileForCwd
+        .mockResolvedValueOnce({ filePath: "/tmp/new-session.jsonl", sessionId: "new-session" });
       vi.mocked(getFileSize).mockResolvedValue(100);
 
       let completeCalled = false;
@@ -465,12 +450,6 @@ describe("WatcherManager", () => {
         undefined,
         () => { completeCalled = true; }
       );
-
-      // Now simulate pollForPostCompactionSession finding a new session
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/new-session.jsonl",
-        sessionId: "new-session",
-      });
 
       // Advance timers to trigger the poll (3s interval)
       await vi.advanceTimersByTimeAsync(3_500);
@@ -486,6 +465,7 @@ describe("WatcherManager", () => {
         expect.any(Function),
         undefined,
         expect.any(Function),
+        expect.any(Object),
       );
     });
 
@@ -506,10 +486,9 @@ describe("WatcherManager", () => {
           return vi.fn();
         });
 
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/old-session.jsonl",
-        sessionId: "old-session",
-      });
+      const adapter = mockResolvedAdapter("/tmp/old-session.jsonl", "old-session");
+      adapter.getLatestSessionFileForCwd
+        .mockResolvedValueOnce({ filePath: "/tmp/new-session.jsonl", sessionId: "new-session" });
       vi.mocked(getFileSize).mockResolvedValue(100);
 
       let completeCalled = false;
@@ -519,12 +498,6 @@ describe("WatcherManager", () => {
         undefined,
         () => { completeCalled = true; }
       );
-
-      // Poll finds a new session
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/new-session.jsonl",
-        sessionId: "new-session",
-      });
 
       await vi.advanceTimersByTimeAsync(3_500);
 
@@ -542,10 +515,7 @@ describe("WatcherManager", () => {
       const manager = createManager();
       vi.mocked(watchForResponse).mockReturnValue(vi.fn());
 
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/same-session.jsonl",
-        sessionId: "same-session",
-      });
+      mockResolvedAdapter("/tmp/same-session.jsonl", "same-session");
       vi.mocked(getFileSize).mockResolvedValue(100);
 
       let completeCalled = false;
@@ -570,10 +540,7 @@ describe("WatcherManager", () => {
       const manager = createManager();
       vi.mocked(watchForResponse).mockReturnValue(vi.fn());
 
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session.jsonl",
-        sessionId: "session-abc",
-      });
+      mockResolvedAdapter("/tmp/session.jsonl", "session-abc");
       vi.mocked(getFileSize).mockResolvedValue(100);
 
       // Start first watcher (starts poll with generation=1)
@@ -583,22 +550,15 @@ describe("WatcherManager", () => {
       );
 
       // Start second watcher (increments generation to 2, aborting poll from first)
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session2.jsonl",
-        sessionId: "session-def",
-      });
+      const adapter2 = mockResolvedAdapter("/tmp/session2.jsonl", "session-def");
+      // Second watcher's poll will find a new session on next iteration
+      adapter2.getLatestSessionFileForCwd
+        .mockResolvedValueOnce({ filePath: "/tmp/session3.jsonl", sessionId: "session-ghi" });
 
       await manager.startInjectionWatcher(
         { sessionId: "session-def", cwd: "/tmp/project" },
         123
       );
-
-      // Now advance timers — the first poll should NOT restart a watcher
-      // because its generation is stale
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/session3.jsonl",
-        sessionId: "session-ghi",
-      });
 
       await vi.advanceTimersByTimeAsync(3_500);
 
