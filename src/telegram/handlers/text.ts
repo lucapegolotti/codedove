@@ -1,16 +1,17 @@
 import { Context } from "grammy";
 import { log } from "../../logger.js";
-import { ATTACHED_SESSION_PATH, getAttachedSession, listSessions, getLatestSessionFileForCwd } from "../../session/history.js";
+import { ATTACHED_SESSION_PATH, getAttachedSession, listSessions } from "../../session/history.js";
 import type { SessionResponseState, DetectedImage } from "../../session/monitor.js";
 import { notifyResponse, notifyImages, sendPing, getSessionForMessage } from "../notifications.js";
 import { sendMarkdownReply } from "../utils.js";
 import { launchedPaneId } from "./sessions.js";
-import { findClaudePane, sendInterrupt, injectInput, listTmuxPanes, isClaudePane } from "../../session/tmux.js";
+import { findClaudePane, sendInterrupt, injectInput, listTmuxPanes } from "../../session/tmux.js";
 import { pendingImages, pendingImageCount, clearPendingImageCount } from "./callbacks/index.js";
 import { InputFile } from "grammy";
 import { writeFile, mkdir, readFile } from "fs/promises";
 import { homedir } from "os";
 import { WatcherManager } from "../../session/watcher-manager.js";
+import { adapterForPane } from "../../session/adapters/index.js";
 import { getStreamManager } from "../../session/stream-manager.js";
 import { getTimerSetup, setTimerSetup, startTimer } from "./timer.js";
 
@@ -199,13 +200,14 @@ export async function processTextTurn(ctx: Context, chatId: number, text: string
       if (match) {
         const projectName = match[1].trim();
         const allPanes = await listTmuxPanes();
-        const pane = allPanes.filter(isClaudePane).find(
-          (p) => (p.cwd.split("/").pop() || p.cwd) === projectName
-        );
-        if (pane) {
-          const latest = await getLatestSessionFileForCwd(pane.cwd);
+        for (const pane of allPanes) {
+          if ((pane.cwd.split("/").pop() || pane.cwd) !== projectName) continue;
+          const adapter = adapterForPane(pane);
+          if (!adapter) continue;
+          const latest = await adapter.getLatestSessionFileForCwd(pane.cwd);
           if (latest) {
             replySession = { sessionId: latest.sessionId, cwd: pane.cwd };
+            break;
           }
         }
       }
