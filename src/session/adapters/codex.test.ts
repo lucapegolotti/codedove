@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { CodexAdapter } from "./codex.js";
+import { mkdtemp, mkdir, writeFile, utimes } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
 
 describe("CodexAdapter parsing", () => {
   const adapter = new CodexAdapter();
@@ -155,5 +158,63 @@ describe("CodexAdapter parsing", () => {
     it("falls back to 'codex' when undefined", () => {
       expect(adapter.friendlyModelName(undefined)).toBe("codex");
     });
+  });
+});
+
+describe("CodexAdapter session discovery", () => {
+  it("finds the newest rollout file matching cwd across date subdirs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-adapter-"));
+    const adapter = new CodexAdapter();
+    (adapter as any).projectsPath = root;
+
+    const now = new Date();
+    const yyyy = now.getUTCFullYear().toString();
+    const mm = (now.getUTCMonth() + 1).toString().padStart(2, "0");
+    const dd = now.getUTCDate().toString().padStart(2, "0");
+    const yesterday = new Date(now.getTime() - 86_400_000);
+    const yyyy2 = yesterday.getUTCFullYear().toString();
+    const mm2 = (yesterday.getUTCMonth() + 1).toString().padStart(2, "0");
+    const dd2 = yesterday.getUTCDate().toString().padStart(2, "0");
+
+    const day1 = join(root, yyyy2, mm2, dd2);
+    const day2 = join(root, yyyy, mm, dd);
+    await mkdir(day1, { recursive: true });
+    await mkdir(day2, { recursive: true });
+
+    const oldFile = join(day1, "rollout-2026-04-20T10-00-00-aaa-bbb-ccc-ddd-000000000001.jsonl");
+    const newFile = join(day2, "rollout-2026-04-23T10-00-00-aaa-bbb-ccc-ddd-000000000002.jsonl");
+    const otherCwdFile = join(day2, "rollout-2026-04-23T11-00-00-aaa-bbb-ccc-ddd-000000000003.jsonl");
+
+    await writeFile(
+      oldFile,
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/tmp/target" } }) + "\n"
+    );
+    await writeFile(
+      newFile,
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/tmp/target" } }) + "\n"
+    );
+    await writeFile(
+      otherCwdFile,
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/tmp/other" } }) + "\n"
+    );
+
+    const nowMs = Date.now();
+    await utimes(oldFile, new Date(nowMs - 10_000), new Date(nowMs - 10_000));
+    await utimes(newFile, new Date(nowMs), new Date(nowMs));
+    await utimes(otherCwdFile, new Date(nowMs + 5_000), new Date(nowMs + 5_000));
+
+    const result = await adapter.getLatestSessionFileForCwd("/tmp/target");
+    expect(result).not.toBeNull();
+    expect(result!.filePath).toBe(newFile);
+    expect(result!.sessionId).toBe("aaa-bbb-ccc-ddd-000000000002");
+  });
+
+  it("returns null when no matching cwd is found", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-adapter-"));
+    const adapter = new CodexAdapter();
+    (adapter as any).projectsPath = root;
+
+    const result = await adapter.getLatestSessionFileForCwd("/tmp/nonexistent");
+    expect(result).toBeNull();
   });
 });

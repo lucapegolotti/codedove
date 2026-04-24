@@ -1,4 +1,6 @@
 import { homedir } from "os";
+import { readdir, readFile, stat } from "fs/promises";
+import { join } from "path";
 import type { SessionAdapter, LatestSessionFile } from "../adapter.js";
 import type { TmuxPane } from "../tmux.js";
 import type { ToolUseEntry } from "../jsonl.js";
@@ -15,9 +17,74 @@ export class CodexAdapter implements SessionAdapter {
     return /codex/i.test(pane.command);
   }
 
-  async getLatestSessionFileForCwd(_cwd: string): Promise<LatestSessionFile | null> {
-    // Implemented in Task 4.
-    return null;
+  async getLatestSessionFileForCwd(cwd: string): Promise<LatestSessionFile | null> {
+    // Codex partitions sessions as <projectsPath>/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl.
+    // Scan the last 7 days of subdirectories (sessions older than that are stale).
+    const dayDirs = await this.recentDayDirs(7);
+
+    let best: { filePath: string; sessionId: string; mtime: number } | null = null;
+
+    for (const dayDir of dayDirs) {
+      let files: string[];
+      try {
+        files = (await readdir(dayDir)).filter((f) => f.startsWith("rollout-") && f.endsWith(".jsonl"));
+      } catch {
+        continue;
+      }
+
+      for (const file of files) {
+        const filePath = join(dayDir, file);
+        let fileCwd: string | null = null;
+        try {
+          const buf = await readFile(filePath, { encoding: "utf8" });
+          const firstLine = buf.split("\n", 1)[0];
+          const entry = JSON.parse(firstLine);
+          if (entry.type === "session_meta" && typeof entry.payload?.cwd === "string") {
+            fileCwd = entry.payload.cwd;
+          }
+        } catch {
+          continue;
+        }
+
+        if (fileCwd !== cwd) continue;
+
+        let mtime: number;
+        try {
+          mtime = (await stat(filePath)).mtime.getTime();
+        } catch {
+          continue;
+        }
+
+        if (best === null || mtime > best.mtime) {
+          const sessionId = file
+            .replace(/^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-/, "")
+            .replace(/\.jsonl$/, "");
+          best = { filePath, sessionId, mtime };
+        }
+      }
+    }
+
+    if (!best) return null;
+    return { filePath: best.filePath, sessionId: best.sessionId };
+  }
+
+  private async recentDayDirs(days: number): Promise<string[]> {
+    const result: string[] = [];
+    const now = new Date();
+    for (let d = 0; d < days; d++) {
+      const dt = new Date(now.getTime() - d * 86_400_000);
+      const yyyy = dt.getUTCFullYear().toString();
+      const mm = (dt.getUTCMonth() + 1).toString().padStart(2, "0");
+      const dd = dt.getUTCDate().toString().padStart(2, "0");
+      const dir = join(this.projectsPath, yyyy, mm, dd);
+      try {
+        await stat(dir);
+        result.push(dir);
+      } catch {
+        continue;
+      }
+    }
+    return result;
   }
 
   parseAssistantText(lines: string[]): {
