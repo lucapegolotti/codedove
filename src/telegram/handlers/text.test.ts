@@ -9,6 +9,7 @@ const mockGetAttachedSession = vi.fn();
 const mockListSessions = vi.fn();
 vi.mock("../../session/history.js", () => ({
   ATTACHED_SESSION_PATH: "/tmp/codedove-test/attached",
+  PROJECTS_PATH: "/tmp/codedove-test/projects",
   getAttachedSession: (...args: unknown[]) => mockGetAttachedSession(...args),
   listSessions: (...args: unknown[]) => mockListSessions(...args),
   getLatestSessionFileForCwd: vi.fn().mockResolvedValue({ sessionId: "s1", filePath: "/s1.jsonl" }),

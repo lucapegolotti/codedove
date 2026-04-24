@@ -2,11 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("./tmux.js", () => ({
   listTmuxPanes: vi.fn().mockResolvedValue([]),
-  isClaudePane: vi.fn((p: any) => p.command.includes("claude")),
-}));
-
-vi.mock("./history.js", () => ({
-  getLatestSessionFileForCwd: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("./monitor.js", () => ({
@@ -23,8 +18,8 @@ vi.mock("../logger.js", () => ({ log: vi.fn() }));
 
 import { SessionStreamManager, getStreamManager, setStreamManager } from "./stream-manager.js";
 import { listTmuxPanes } from "./tmux.js";
-import { getLatestSessionFileForCwd } from "./history.js";
 import { watchForResponse, getFileSize } from "./monitor.js";
+import type { SessionAdapter } from "./adapter.js";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -40,16 +35,31 @@ describe("SessionStreamManager", () => {
     return { paneId: "%1", shellPid: 123, command: "claude", cwd };
   }
 
+  function makeManager(overrides: Partial<SessionAdapter> = {}) {
+    const adapter: SessionAdapter = {
+      name: "claude",
+      projectsPath: "/claude",
+      supportsImageDetection: true,
+      isAgentPane: (p: any) => p.command.includes("claude"),
+      getLatestSessionFileForCwd: vi.fn().mockResolvedValue({
+        filePath: "/tmp/a.jsonl",
+        sessionId: "session-a",
+      }) as any,
+      parseAssistantText: () => ({ text: null, cwd: null, model: undefined }),
+      findResultEvent: () => false,
+      extractToolUses: () => [],
+      friendlyModelName: () => "claude",
+      ...overrides,
+    };
+    return { adapter, manager: new SessionStreamManager([adapter]) };
+  }
+
   describe("start", () => {
     it("discovers tmux sessions and starts watchers on start", async () => {
       vi.mocked(listTmuxPanes).mockResolvedValue([claudePane("/tmp/projectA")]);
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/a.jsonl",
-        sessionId: "session-a",
-      });
       vi.mocked(getFileSize).mockResolvedValue(500);
 
-      const manager = new SessionStreamManager();
+      const { manager } = makeManager();
       await manager.start();
 
       expect(watchForResponse).toHaveBeenCalledWith(
@@ -60,6 +70,7 @@ describe("SessionStreamManager", () => {
         expect.any(Function),
         undefined,
         expect.any(Function),
+        expect.any(Object),
       );
 
       manager.stop();
@@ -70,13 +81,9 @@ describe("SessionStreamManager", () => {
         claudePane("/tmp/projectA"),
         claudePane("/tmp/projectA"),
       ]);
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/a.jsonl",
-        sessionId: "session-a",
-      });
       vi.mocked(getFileSize).mockResolvedValue(500);
 
-      const manager = new SessionStreamManager();
+      const { manager } = makeManager();
       await manager.start();
 
       expect(watchForResponse).toHaveBeenCalledTimes(1);
@@ -89,17 +96,13 @@ describe("SessionStreamManager", () => {
     it("discovers new sessions on poll interval", async () => {
       vi.mocked(listTmuxPanes).mockResolvedValue([]);
 
-      const manager = new SessionStreamManager();
+      const { manager } = makeManager();
       await manager.start();
 
       expect(watchForResponse).not.toHaveBeenCalled();
 
       // New session appears
       vi.mocked(listTmuxPanes).mockResolvedValue([claudePane("/tmp/projectB")]);
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/b.jsonl",
-        sessionId: "session-b",
-      });
       vi.mocked(getFileSize).mockResolvedValue(100);
 
       await vi.advanceTimersByTimeAsync(30_000);
@@ -113,13 +116,9 @@ describe("SessionStreamManager", () => {
       const stopFn = vi.fn();
       vi.mocked(watchForResponse).mockReturnValue(stopFn);
       vi.mocked(listTmuxPanes).mockResolvedValue([claudePane("/tmp/projectA")]);
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/a.jsonl",
-        sessionId: "session-a",
-      });
       vi.mocked(getFileSize).mockResolvedValue(500);
 
-      const manager = new SessionStreamManager();
+      const { manager } = makeManager();
       await manager.start();
 
       // Pane disappears
@@ -138,13 +137,9 @@ describe("SessionStreamManager", () => {
       const stopFn = vi.fn();
       vi.mocked(watchForResponse).mockReturnValue(stopFn);
       vi.mocked(listTmuxPanes).mockResolvedValue([claudePane("/tmp/projectA")]);
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/a.jsonl",
-        sessionId: "session-a",
-      });
       vi.mocked(getFileSize).mockResolvedValue(500);
 
-      const manager = new SessionStreamManager();
+      const { manager } = makeManager();
       await manager.start();
 
       manager.pause("/tmp/projectA");
@@ -158,13 +153,12 @@ describe("SessionStreamManager", () => {
       const stopFn = vi.fn();
       vi.mocked(watchForResponse).mockReturnValue(stopFn);
       vi.mocked(listTmuxPanes).mockResolvedValue([claudePane("/tmp/projectA")]);
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/a.jsonl",
-        sessionId: "session-a",
-      });
       vi.mocked(getFileSize).mockResolvedValue(500);
 
-      const manager = new SessionStreamManager();
+      const getLatest = vi.fn()
+        .mockResolvedValueOnce({ filePath: "/tmp/a.jsonl", sessionId: "session-a" })
+        .mockResolvedValue({ filePath: "/tmp/a.jsonl", sessionId: "session-a" });
+      const { manager } = makeManager({ getLatestSessionFileForCwd: getLatest as any });
       await manager.start();
 
       expect(watchForResponse).toHaveBeenCalledTimes(1);
@@ -185,13 +179,14 @@ describe("SessionStreamManager", () => {
         expect.any(Function),
         undefined,
         expect.any(Function),
+        expect.any(Object),
       );
 
       manager.stop();
     });
 
     it("pause is a no-op for unknown cwd", () => {
-      const manager = new SessionStreamManager();
+      const { manager } = makeManager();
       // Should not throw
       manager.pause("/tmp/unknown");
       manager.stop();
@@ -208,13 +203,12 @@ describe("SessionStreamManager", () => {
         }
       );
       vi.mocked(listTmuxPanes).mockResolvedValue([claudePane("/tmp/projectA")]);
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/a.jsonl",
-        sessionId: "session-a",
-      });
       vi.mocked(getFileSize).mockResolvedValue(500);
 
-      const manager = new SessionStreamManager();
+      const getLatest = vi.fn()
+        .mockResolvedValueOnce({ filePath: "/tmp/a.jsonl", sessionId: "session-a" })
+        .mockResolvedValue({ filePath: "/tmp/a.jsonl", sessionId: "session-a" });
+      const { manager } = makeManager({ getLatestSessionFileForCwd: getLatest as any });
       await manager.start();
 
       expect(watchForResponse).toHaveBeenCalledTimes(1);
@@ -232,6 +226,7 @@ describe("SessionStreamManager", () => {
         expect.any(Function),
         undefined,
         expect.any(Function),
+        expect.any(Object),
       );
 
       manager.stop();
@@ -246,13 +241,9 @@ describe("SessionStreamManager", () => {
         }
       );
       vi.mocked(listTmuxPanes).mockResolvedValue([claudePane("/tmp/projectA")]);
-      vi.mocked(getLatestSessionFileForCwd).mockResolvedValue({
-        filePath: "/tmp/a.jsonl",
-        sessionId: "session-a",
-      });
       vi.mocked(getFileSize).mockResolvedValue(500);
 
-      const manager = new SessionStreamManager();
+      const { manager } = makeManager();
       await manager.start();
 
       manager.pause("/tmp/projectA");
@@ -273,7 +264,7 @@ describe("SessionStreamManager", () => {
     });
 
     it("setStreamManager stores and getStreamManager retrieves", () => {
-      const manager = new SessionStreamManager();
+      const { manager } = makeManager();
       setStreamManager(manager);
       expect(getStreamManager()).toBe(manager);
       setStreamManager(null as any);
@@ -288,13 +279,13 @@ describe("SessionStreamManager", () => {
         claudePane("/tmp/projectA"),
         claudePane("/tmp/projectB"),
       ]);
-      vi.mocked(getLatestSessionFileForCwd).mockImplementation(async (cwd: string) => ({
+      vi.mocked(getFileSize).mockResolvedValue(0);
+
+      const getLatest = vi.fn().mockImplementation(async (cwd: string) => ({
         filePath: `${cwd}/session.jsonl`,
         sessionId: `session-${cwd}`,
       }));
-      vi.mocked(getFileSize).mockResolvedValue(0);
-
-      const manager = new SessionStreamManager();
+      const { manager } = makeManager({ getLatestSessionFileForCwd: getLatest as any });
       await manager.start();
 
       manager.stop();

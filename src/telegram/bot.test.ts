@@ -41,6 +41,7 @@ vi.mock("../session/tmux.js", () => ({
 
 vi.mock("../session/history.js", () => ({
   ATTACHED_SESSION_PATH: "/tmp/cv-test/attached",
+  PROJECTS_PATH: "/tmp/cv-test/projects",
   getAttachedSession: vi.fn(),
   listSessions: vi.fn(),
   getLatestSessionFileForCwd: vi.fn(),
