@@ -81,8 +81,13 @@ export class NotificationService {
     if (PLAN_APPROVAL_RE.test(state.text)) return;
     this.toolStatus.delete(state.sessionId);
 
-    const modelSuffix = state.model ? ` (${friendlyModelName(state.model)})` : "";
-    const text = `\`${state.projectName}${modelSuffix}:\` ${state.text.replace(/:$/m, "")}`;
+    const cliLabel = state.cliName ?? "";
+    const modelName = state.model ? friendlyModelName(state.model) : "";
+    const parenContent = cliLabel && modelName
+      ? `${cliLabel} ${modelName}`
+      : cliLabel || modelName;
+    const suffix = parenContent ? ` (${parenContent})` : "";
+    const text = `\`${state.projectName}${suffix}:\` ${state.text.replace(/:$/m, "")}`;
     try {
       const sent = await this.bot.api.sendMessage(this.chatId, text, { parse_mode: "Markdown" });
       this.trackMessage(sent.message_id, state.sessionId, state.cwd);

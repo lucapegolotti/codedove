@@ -506,6 +506,67 @@ describe("notifyResponse with model", () => {
     const call = mockBot.api.sendMessage.mock.calls[0];
     expect(call[1]).toContain("opus 4.6");
   });
+
+  it("includes CLI label when cliName is set (codex)", async () => {
+    notifications.register(mockBot as any, 123);
+    mockBot.api.sendMessage.mockResolvedValue({ message_id: 10 });
+
+    await notifications.notifyResponse({
+      sessionId: "s1",
+      projectName: "myproj",
+      cwd: "/tmp/p",
+      filePath: "/tmp/p.jsonl",
+      text: "Hello",
+      model: "gpt-5.4",
+      cliName: "codex",
+    });
+
+    expect(mockBot.api.sendMessage).toHaveBeenCalledWith(
+      123,
+      expect.stringContaining("myproj (codex gpt-5.4):"),
+      expect.any(Object),
+    );
+  });
+
+  it("includes CLI label when cliName is set (claude)", async () => {
+    notifications.register(mockBot as any, 123);
+    mockBot.api.sendMessage.mockResolvedValue({ message_id: 10 });
+
+    await notifications.notifyResponse({
+      sessionId: "s2",
+      projectName: "myproj",
+      cwd: "/tmp/p",
+      filePath: "/tmp/p.jsonl",
+      text: "Hello",
+      model: "claude-opus-4-7",
+      cliName: "claude",
+    });
+
+    expect(mockBot.api.sendMessage).toHaveBeenCalledWith(
+      123,
+      expect.stringMatching(/myproj \(claude [^)]+\):/),
+      expect.any(Object),
+    );
+  });
+
+  it("falls back to model only when cliName is absent", async () => {
+    notifications.register(mockBot as any, 123);
+    mockBot.api.sendMessage.mockResolvedValue({ message_id: 10 });
+
+    await notifications.notifyResponse({
+      sessionId: "s3",
+      projectName: "myproj",
+      cwd: "/tmp/p",
+      filePath: "/tmp/p.jsonl",
+      text: "Hello",
+      model: "claude-opus-4-7",
+    });
+
+    // Without cliName, the prefix should be (opus 4.6)-style without CLI
+    const call = mockBot.api.sendMessage.mock.calls.find((c: any[]) => c[1].includes("myproj ("));
+    expect(call).toBeDefined();
+    expect(call[1]).not.toMatch(/myproj \(claude /);
+  });
 });
 
 // ---------------------------------------------------------------------------
