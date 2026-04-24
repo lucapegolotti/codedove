@@ -103,7 +103,7 @@ export class WatcherManager {
       filePath,
       baseline,
       wrappedOnResponse,
-      () => sendPing("⏳ Still working..."),
+      undefined,
       () => {
         this.compactPollGeneration++;  // abort any active rotation poll
         this.activeOnComplete = null;
@@ -144,7 +144,7 @@ export class WatcherManager {
           latest.filePath,
           0,
           async (state) => { await (onResponse ?? notifyResponse)(state); },
-          () => sendPing("⏳ Still working..."),
+          undefined,
           () => {
             this.activeOnComplete = null;
             onComplete?.();

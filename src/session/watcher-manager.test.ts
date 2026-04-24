@@ -204,7 +204,7 @@ describe("WatcherManager", () => {
         "/tmp/pre-session.jsonl",
         200,
         expect.any(Function),
-        expect.any(Function),
+        undefined,
         expect.any(Function),
         expect.any(Function),
         expect.any(Function),
@@ -274,7 +274,7 @@ describe("WatcherManager", () => {
         "/tmp/looked-up.jsonl",
         300,
         expect.any(Function),
-        expect.any(Function),
+        undefined,
         expect.any(Function),
         expect.any(Function),
         expect.any(Function),
@@ -320,15 +320,13 @@ describe("WatcherManager", () => {
       await capturedOnResponse(state);
       expect(customOnResponse).toHaveBeenCalledWith(state);
 
-      // Invoke onPing
-      capturedOnPing();
-      expect(sendPing).toHaveBeenCalledWith("⏳ Still working...");
+      // onPing is now undefined (no "Still working" message)
+      expect(capturedOnPing).toBeUndefined();
 
       // Invoke onComplete — since response was delivered, should NOT send "Done" ping
       capturedOnComplete();
       expect(completeCalled).toBe(true);
-      // sendPing was called once for the ping, should not be called again for "Done"
-      expect(vi.mocked(sendPing)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(sendPing)).not.toHaveBeenCalled();
     });
 
     it("onComplete sends Done ping when no response was delivered", async () => {
@@ -484,7 +482,7 @@ describe("WatcherManager", () => {
         "/tmp/new-session.jsonl",
         0,
         expect.any(Function),
-        expect.any(Function),
+        undefined,
         expect.any(Function),
         undefined,
         expect.any(Function),
@@ -535,9 +533,8 @@ describe("WatcherManager", () => {
       capturedOnComplete!();
       expect(completeCalled).toBe(true);
 
-      // The restarted watcher's onPing should not throw
-      expect(capturedOnPing).toBeDefined();
-      capturedOnPing!(); // just ensure it doesn't throw
+      // The restarted watcher's onPing is now undefined
+      expect(capturedOnPing).toBeUndefined();
     });
 
     it("calls onComplete when poll times out without finding new session", async () => {
