@@ -229,8 +229,19 @@ export function watchForResponse(
   const parts = filePath.split("/");
   const sessionId = parts[parts.length - 1].replace(".jsonl", "");
   const projectDir = parts[parts.length - 2];
-  const projectName = decodeProjectName(projectDir);
+  // For Claude, the parent dir encodes the project (e.g. -Users-luca-foo). For Codex,
+  // it's a day directory (e.g. "24"). Compute projectName from the parsed cwd at fire
+  // time instead — see deriveProjectName below.
+  const fallbackProjectName = decodeProjectName(projectDir);
   const cwd = parts.slice(0, -2).join("/"); // approximation; real cwd read from file
+
+  const deriveProjectName = (parsedCwd: string | null): string => {
+    if (parsedCwd) {
+      const last = parsedCwd.split("/").filter(Boolean).pop();
+      if (last) return last;
+    }
+    return fallbackProjectName;
+  };
 
   const _parseAssistantText = adapter?.parseAssistantText.bind(adapter) ?? parseAssistantText;
   const _findResultEvent = adapter?.findResultEvent.bind(adapter) ?? findResultEvent;
@@ -341,7 +352,7 @@ export function watchForResponse(
           if (latestText && latestText !== lastSentText) {
             lastSentText = latestText;
             log({ message: `watchForResponse firing for session ${sessionId.slice(0, 8)}: ${latestText.slice(0, 60)}` });
-            pendingResponse = onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText, model: latestModel, cliName: adapter?.name }).catch(
+            pendingResponse = onResponse({ sessionId, projectName: deriveProjectName(latestCwd), cwd: latestCwd, filePath, text: latestText, model: latestModel, cliName: adapter?.name }).catch(
               (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
             );
             await pendingResponse;
@@ -358,7 +369,7 @@ export function watchForResponse(
               if (final.text && final.text !== lastSentText) {
                 lastSentText = final.text;
                 log({ message: `watchForResponse final-flush for session ${sessionId.slice(0, 8)}: ${final.text.slice(0, 60)}` });
-                await onResponse({ sessionId, projectName, cwd: final.cwd ?? cwd, filePath, text: final.text, model: final.model, cliName: adapter?.name }).catch(
+                await onResponse({ sessionId, projectName: deriveProjectName(final.cwd ?? null), cwd: final.cwd ?? cwd, filePath, text: final.text, model: final.model, cliName: adapter?.name }).catch(
                   (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
                 );
               }
@@ -395,7 +406,7 @@ export function watchForResponse(
         // Fire immediately — no debounce needed since the Stop hook signals completion
         lastSentText = latestText;
         log({ message: `watchForResponse firing for session ${sessionId.slice(0, 8)}: ${latestText.slice(0, 60)}` });
-        pendingResponse = onResponse({ sessionId, projectName, cwd: latestCwd, filePath, text: latestText, model: latestModel, cliName: adapter?.name }).catch(
+        pendingResponse = onResponse({ sessionId, projectName: deriveProjectName(latestCwd), cwd: latestCwd, filePath, text: latestText, model: latestModel, cliName: adapter?.name }).catch(
           (err) => log({ message: `watchForResponse callback error: ${err instanceof Error ? err.message : String(err)}` })
         );
         await pendingResponse;
