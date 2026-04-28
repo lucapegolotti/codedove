@@ -56,6 +56,7 @@ vi.mock("../session/monitor.js", () => ({
 
 vi.mock("./notifications.js", () => ({
   registerForNotifications: vi.fn(),
+  persistChatId: vi.fn().mockResolvedValue(undefined),
   resolveWaitingAction: vi.fn(),
   notifyResponse: vi.fn(),
   sendPing: vi.fn(),
@@ -1055,8 +1056,14 @@ describe("/timer command", () => {
 // ---------------------------------------------------------------------------
 
 describe("/summarize command", () => {
+  const originalKey = process.env.ANTHROPIC_API_KEY;
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.ANTHROPIC_API_KEY = "test-key";
+  });
+  afterEach(() => {
+    if (originalKey !== undefined) process.env.ANTHROPIC_API_KEY = originalKey;
+    else delete process.env.ANTHROPIC_API_KEY;
   });
 
   it("shows summary on happy path", async () => {
@@ -1091,8 +1098,14 @@ describe("/summarize command", () => {
 // ---------------------------------------------------------------------------
 
 describe("/polishvoice command", () => {
+  const originalKey = process.env.ANTHROPIC_API_KEY;
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.ANTHROPIC_API_KEY = "test-key";
+  });
+  afterEach(() => {
+    if (originalKey !== undefined) process.env.ANTHROPIC_API_KEY = originalKey;
+    else delete process.env.ANTHROPIC_API_KEY;
   });
 
   it("toggles polish off when currently on (flag file absent)", async () => {

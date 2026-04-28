@@ -4,7 +4,8 @@ import { loadConfig } from "./config/config.js";
 import { startMonitor } from "./session/monitor.js";
 import { watchPermissionRequests } from "./session/permissions.js";
 import { SessionStreamManager, setStreamManager } from "./session/stream-manager.js";
-import { notifyWaiting, sendStartupMessage, notifyPermission } from "./telegram/notifications.js";
+import { notifyWaiting, sendStartupMessage, notifyPermission, registerForNotifications } from "./telegram/notifications.js";
+import { readFile } from "fs/promises";
 import { existsSync } from "fs";
 import { writeFile, mkdir } from "fs/promises";
 import { homedir } from "os";
@@ -28,6 +29,20 @@ const token = process.env.TELEGRAM_BOT_TOKEN!;
 const config = await loadConfig();
 const bot = createBot(token, config.allowedChatId);
 bot.catch(console.error);
+
+// Register the singleton with a persisted chat-id so background watchers can
+// send notifications before any inbound user message has arrived.
+try {
+  const persistedChatId = parseInt(
+    (await readFile(join(homedir(), ".codedove", "chat-id"), "utf8")).trim(),
+    10,
+  );
+  if (Number.isFinite(persistedChatId)) {
+    registerForNotifications(bot, persistedChatId);
+  }
+} catch {
+  // No persisted chat-id yet — register will run when the user sends a message.
+}
 
 // Write the token so compact hook scripts can use curl to call the Telegram API
 mkdir(join(homedir(), ".codedove"), { recursive: true })

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { sendStartupMessage, registerForNotifications, notifyResponse, notifyPermission, notifyWaiting, notifyImages, sendPing, resolveWaitingAction, friendlyModelName, notifications, notifyToolUse } from "./notifications.js";
+import { sendStartupMessage, registerForNotifications, persistChatId, notifyResponse, notifyPermission, notifyWaiting, notifyImages, sendPing, resolveWaitingAction, friendlyModelName, notifications, notifyToolUse } from "./notifications.js";
 import { WaitingType } from "../session/monitor.js";
 import { splitMessage } from "./utils.js";
 
@@ -55,13 +55,11 @@ describe("sendStartupMessage", () => {
   });
 });
 
-describe("registerForNotifications", () => {
+describe("persistChatId", () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
   it("persists the chat ID to disk", async () => {
-    registerForNotifications({} as any, 12345);
-
-    await new Promise((r) => setTimeout(r, 50));
+    await persistChatId(12345);
 
     expect(vi.mocked(writeFile)).toHaveBeenCalledWith(
       expect.stringContaining("chat-id"),

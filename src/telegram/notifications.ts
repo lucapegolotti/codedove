@@ -46,9 +46,6 @@ export class NotificationService {
     this.chatId = chatId;
     this.toolStatus.clear();
     this.messageToSession.clear();
-    mkdir(CODEDOVE_DIR, { recursive: true })
-      .then(() => writeFile(CHAT_ID_PATH, String(chatId), "utf8"))
-      .catch(() => {});
   }
 
   async sendPing(text: string): Promise<void> {
@@ -207,6 +204,16 @@ export const notifications = new NotificationService();
 
 export function registerForNotifications(bot: Bot, chatId: number): void {
   notifications.register(bot, chatId);
+}
+
+/** Persist the chat-id so the bot can register on next startup before any inbound message. */
+export async function persistChatId(chatId: number): Promise<void> {
+  try {
+    await mkdir(CODEDOVE_DIR, { recursive: true });
+    await writeFile(CHAT_ID_PATH, String(chatId), "utf8");
+  } catch {
+    // best-effort
+  }
 }
 
 export async function sendPing(text: string): Promise<void> {

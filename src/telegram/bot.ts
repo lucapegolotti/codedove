@@ -6,7 +6,7 @@ import { handleVoice } from "./handlers/voice.js";
 import { handleImageMessage } from "./handlers/image.js";
 import { registerCommands } from "./handlers/commands.js";
 import { registerCallbacks } from "./handlers/callbacks/index.js";
-import { registerForNotifications } from "./notifications.js";
+import { registerForNotifications, persistChatId } from "./notifications.js";
 import { log } from "../logger.js";
 
 
@@ -23,6 +23,7 @@ export function createBot(token: string, allowedChatId?: number): Bot {
     await ctx.replyWithChatAction("typing");
     log({ chatId, direction: "in", message: ctx.message.text });
     registerForNotifications(bot, chatId);
+    void persistChatId(chatId);
 
     try {
       await processTextTurn(ctx, chatId, ctx.message.text);
@@ -34,6 +35,7 @@ export function createBot(token: string, allowedChatId?: number): Bot {
 
   bot.on("message:voice", async (ctx) => {
     registerForNotifications(bot, ctx.chat.id);
+    void persistChatId(ctx.chat.id);
     await handleVoice(ctx, ctx.chat.id, token).catch(async (err) => {
       log({ chatId: ctx.chat.id, message: `Voice error: ${err instanceof Error ? err.message : String(err)}` });
       await ctx.reply("Couldn't process your voice message — try again?");
@@ -43,6 +45,7 @@ export function createBot(token: string, allowedChatId?: number): Bot {
   bot.on("message:photo", async (ctx) => {
     const chatId = ctx.chat.id;
     registerForNotifications(bot, chatId);
+    void persistChatId(chatId);
     try {
       const largest = ctx.message.photo[ctx.message.photo.length - 1];
       await handleImageMessage(ctx, chatId, largest.file_id, "image/jpeg", ctx.message.caption ?? "", token);
@@ -57,6 +60,7 @@ export function createBot(token: string, allowedChatId?: number): Bot {
     const mime = ctx.message.document.mime_type ?? "";
     if (!mime.startsWith("image/")) return;
     registerForNotifications(bot, chatId);
+    void persistChatId(chatId);
     try {
       await handleImageMessage(ctx, chatId, ctx.message.document.file_id, mime, ctx.message.caption ?? "", token);
     } catch (err) {
