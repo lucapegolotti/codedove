@@ -39,14 +39,20 @@ async function getClaudeChildStartTime(shellPid: number): Promise<number> {
   }
 }
 
-export function findBestPane(panes: TmuxPane[], targetCwd: string): TmuxPane[] {
-  const claudePanes = panes.filter(isClaudePane);
-  if (claudePanes.length === 0) return [];
+// Predicate for "this pane runs an agent CLI" (Claude Code or Codex). Defaults to
+// matching either, but callers can pass a custom predicate to scope the search.
+export function findBestPane(
+  panes: TmuxPane[],
+  targetCwd: string,
+  isAgent: (p: TmuxPane) => boolean = (p) => isClaudePane(p) || /codex/i.test(p.command) || (p.commandLine ? /codex/i.test(p.commandLine) : false)
+): TmuxPane[] {
+  const agentPanes = panes.filter(isAgent);
+  if (agentPanes.length === 0) return [];
 
-  const exact = claudePanes.filter((p) => p.cwd === targetCwd);
+  const exact = agentPanes.filter((p) => p.cwd === targetCwd);
   if (exact.length > 0) return exact;
 
-  const parents = claudePanes.filter((p) => targetCwd.startsWith(p.cwd + "/"));
+  const parents = agentPanes.filter((p) => targetCwd.startsWith(p.cwd + "/"));
   return parents;
 }
 
@@ -124,12 +130,14 @@ export async function findClaudePane(targetCwd: string): Promise<TmuxResult> {
     return { found: true, paneId: best.pane.paneId };
   }
 
-  // No cwd match — fall back to any single claude pane
-  const claudePanes = panes.filter(isClaudePane);
-  if (claudePanes.length === 0) return { found: false, reason: "no_claude_pane" };
-  if (claudePanes.length > 1) return { found: false, reason: "ambiguous", panes: claudePanes };
+  // No cwd match — fall back to any single agent pane (Claude or Codex)
+  const isAgent = (p: TmuxPane) =>
+    isClaudePane(p) || /codex/i.test(p.command) || (p.commandLine ? /codex/i.test(p.commandLine) : false);
+  const agentPanes = panes.filter(isAgent);
+  if (agentPanes.length === 0) return { found: false, reason: "no_claude_pane" };
+  if (agentPanes.length > 1) return { found: false, reason: "ambiguous", panes: agentPanes };
 
-  return { found: true, paneId: claudePanes[0].paneId };
+  return { found: true, paneId: agentPanes[0].paneId };
 }
 
 export async function sendKeysToPane(paneId: string, input: string): Promise<void> {
