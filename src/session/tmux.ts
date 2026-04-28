@@ -8,6 +8,10 @@ export type TmuxPane = {
   shellPid: number; // #{pane_pid} — the shell process in the pane
   command: string;
   cwd: string;
+  // Full command line of the foreground child process (e.g. "node /path/to/codex --yolo"),
+  // resolved by walking the shell PID's children. Used to detect CLIs (like Codex) that
+  // run via a node wrapper, where #{pane_current_command} is "node" not the CLI name.
+  commandLine?: string;
 };
 
 export type TmuxResult =
@@ -51,11 +55,11 @@ export async function listTmuxPanes(): Promise<TmuxPane[]> {
     const { stdout } = await execAsync(
       "tmux list-panes -a -F '#{pane_id} #{pane_pid} #{pane_current_command} #{pane_current_path}'"
     );
-    return stdout
+    const panes = stdout
       .trim()
       .split("\n")
       .filter(Boolean)
-      .map((line) => {
+      .map((line): TmuxPane => {
         const parts = line.split(" ");
         const paneId = parts[0];
         const shellPid = parseInt(parts[1], 10) || 0;
@@ -63,6 +67,33 @@ export async function listTmuxPanes(): Promise<TmuxPane[]> {
         const cwd = parts.slice(3).join(" "); // handle spaces in paths
         return { paneId, shellPid, command, cwd };
       });
+
+    // Enrich with full command line of each shell's child process via a single ps call.
+    // This lets adapters detect CLIs that run via a node/bun wrapper (e.g. Codex), where
+    // pane_current_command is "node" rather than the CLI name.
+    try {
+      const { stdout: psOut } = await execAsync("ps -A -o pid=,ppid=,command=");
+      const childByPpid = new Map<number, string>();
+      for (const line of psOut.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const m = trimmed.match(/^(\d+)\s+(\d+)\s+(.+)$/);
+        if (!m) continue;
+        const ppid = parseInt(m[2], 10);
+        const cmd = m[3];
+        // Keep first child encountered per ppid — fine for our purposes since panes
+        // typically have one foreground child.
+        if (!childByPpid.has(ppid)) childByPpid.set(ppid, cmd);
+      }
+      for (const pane of panes) {
+        const child = childByPpid.get(pane.shellPid);
+        if (child) pane.commandLine = child;
+      }
+    } catch {
+      // ignore — commandLine stays undefined and adapters fall back to `command`
+    }
+
+    return panes;
   } catch {
     return [];
   }

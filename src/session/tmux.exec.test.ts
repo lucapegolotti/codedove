@@ -229,9 +229,10 @@ describe("findClaudePane", () => {
 
 describe("injectInput", () => {
   it("sends keys to found pane and returns result", async () => {
-    // listTmuxPanes call + sendKeysToPane (2 calls: text + Enter)
+    // listTmuxPanes (tmux + ps) + sendKeysToPane (text + Enter)
     mockExecSequence([
       { stdout: "%1 100 claude /Users/luca/project\n" },
+      { stdout: "" }, // ps for commandLine enrichment
       { stdout: "" }, // sendKeysToPane text
       { stdout: "" }, // sendKeysToPane Enter
     ]);
@@ -344,8 +345,10 @@ describe("findClaudePane with multiple candidates (getClaudeChildStartTime)", ()
   it("picks the pane with the most recently started claude child process", async () => {
     // Two claude panes at the same cwd — triggers getClaudeChildStartTime for each
     mockExecSequence([
-      // listTmuxPanes
+      // listTmuxPanes — tmux call
       { stdout: "%1 100 claude /Users/luca/project\n%2 200 claude /Users/luca/project\n" },
+      // listTmuxPanes — ps enrichment
+      { stdout: "" },
       // getClaudeChildStartTime for pane %1 (shellPid=100):
       //   ps -A -o pid= -o ppid= | awk  → returns child pid
       { stdout: "101\n" },
@@ -363,8 +366,10 @@ describe("findClaudePane with multiple candidates (getClaudeChildStartTime)", ()
 
   it("falls back gracefully when getClaudeChildStartTime fails for one pane", async () => {
     mockExecSequence([
-      // listTmuxPanes
+      // listTmuxPanes — tmux call
       { stdout: "%1 100 claude /Users/luca/project\n%2 200 claude /Users/luca/project\n" },
+      // listTmuxPanes — ps enrichment
+      { stdout: "" },
       // getClaudeChildStartTime for pane %1: no child found
       { stdout: "\n" },
       // getClaudeChildStartTime for pane %2:
@@ -380,8 +385,10 @@ describe("findClaudePane with multiple candidates (getClaudeChildStartTime)", ()
 
   it("handles getClaudeChildStartTime error by returning 0", async () => {
     mockExecSequence([
-      // listTmuxPanes
+      // listTmuxPanes — tmux call
       { stdout: "%1 100 claude /Users/luca/project\n%2 200 claude /Users/luca/project\n" },
+      // listTmuxPanes — ps enrichment
+      { stdout: "" },
       // getClaudeChildStartTime for %1: error
       { error: new Error("ps failed") },
       // getClaudeChildStartTime for %2:

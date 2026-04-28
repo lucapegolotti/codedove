@@ -14,7 +14,11 @@ export class CodexAdapter implements SessionAdapter {
   supportsImageDetection = false;
 
   isAgentPane(pane: TmuxPane): boolean {
-    return /codex/i.test(pane.command);
+    if (/codex/i.test(pane.command)) return true;
+    // Codex installed via bun/npm runs as a node wrapper script, so pane.command
+    // is "node". Match on the foreground child process's full command line.
+    if (pane.commandLine && /codex/i.test(pane.commandLine)) return true;
+    return false;
   }
 
   async getLatestSessionFileForCwd(cwd: string): Promise<LatestSessionFile | null> {
