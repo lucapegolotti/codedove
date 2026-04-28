@@ -143,8 +143,8 @@ describe("sendMarkdownMessage", () => {
   function makeBot() {
     return {
       api: {
-        sendMessage: vi.fn().mockResolvedValue(undefined),
-        sendPhoto: vi.fn().mockResolvedValue(undefined),
+        sendMessage: vi.fn().mockResolvedValue({ message_id: 1 }),
+        sendPhoto: vi.fn().mockResolvedValue({ message_id: 2 }),
       },
     } as any;
   }
@@ -170,7 +170,7 @@ describe("sendMarkdownMessage", () => {
     const bot = makeBot();
     bot.api.sendMessage
       .mockRejectedValueOnce(new Error("parse error"))
-      .mockResolvedValue(undefined);
+      .mockResolvedValue({ message_id: 3 });
 
     await sendMarkdownMessage(bot, 12345, "bad *markdown");
     expect(bot.api.sendMessage).toHaveBeenCalledTimes(2);

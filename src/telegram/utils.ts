@@ -137,12 +137,26 @@ export async function sendMarkdownReply(ctx: Context, text: string): Promise<voi
 }
 
 export async function sendMarkdownMessage(bot: Bot, chatId: number, text: string): Promise<void> {
+  await sendMarkdownMessageWithMessageId(bot, chatId, text);
+}
+
+// Like sendMarkdownMessage, but returns the message_id of the LAST text chunk sent
+// (or null if nothing was sent). Useful for tracking which session produced a reply.
+export async function sendMarkdownMessageWithMessageId(
+  bot: Bot,
+  chatId: number,
+  text: string
+): Promise<number | null> {
+  let lastMessageId: number | null = null;
   await sendParts(
-    (chunk, md) =>
-      md
-        ? bot.api.sendMessage(chatId, chunk, { parse_mode: "Markdown" })
-        : bot.api.sendMessage(chatId, chunk),
+    async (chunk, md) => {
+      const sent = md
+        ? await bot.api.sendMessage(chatId, chunk, { parse_mode: "Markdown" })
+        : await bot.api.sendMessage(chatId, chunk);
+      lastMessageId = sent.message_id;
+    },
     (buf) => bot.api.sendPhoto(chatId, new InputFile(buf, "table.png")),
     text
   );
+  return lastMessageId;
 }

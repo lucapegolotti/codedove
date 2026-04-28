@@ -6,7 +6,7 @@ import { log } from "../logger.js";
 import { writeFile, readFile, mkdir } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
-import { sendMarkdownMessage } from "./utils.js";
+import { sendMarkdownMessage, sendMarkdownMessageWithMessageId } from "./utils.js";
 
 const CODEDOVE_DIR = join(homedir(), ".codedove");
 const CHAT_ID_PATH = join(CODEDOVE_DIR, "chat-id");
@@ -89,17 +89,11 @@ export class NotificationService {
     const suffix = parenContent ? ` (${parenContent})` : "";
     const text = `\`${state.projectName}${suffix}:\` ${state.text.replace(/:$/m, "")}`;
     try {
-      const sent = await this.bot.api.sendMessage(this.chatId, text, { parse_mode: "Markdown" });
-      this.trackMessage(sent.message_id, state.sessionId, state.cwd);
+      const messageId = await sendMarkdownMessageWithMessageId(this.bot, this.chatId, text);
+      if (messageId !== null) this.trackMessage(messageId, state.sessionId, state.cwd);
       log({ chatId: this.chatId, message: `notified response: ${state.projectName} (${state.text.slice(0, 60)})` });
-    } catch {
-      try {
-        const sent = await this.bot.api.sendMessage(this.chatId, text);
-        this.trackMessage(sent.message_id, state.sessionId, state.cwd);
-        log({ chatId: this.chatId, message: `notified response: ${state.projectName} (${state.text.slice(0, 60)})` });
-      } catch (err) {
-        log({ message: `failed to send response notification: ${err instanceof Error ? err.message : String(err)}` });
-      }
+    } catch (err) {
+      log({ message: `failed to send response notification: ${err instanceof Error ? err.message : String(err)}` });
     }
   }
 
