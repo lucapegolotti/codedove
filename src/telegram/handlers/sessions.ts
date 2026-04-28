@@ -1,5 +1,5 @@
 import { Context, InlineKeyboard } from "grammy";
-import { parseJsonlLines, readSessionLines } from "../../session/history.js";
+import { readSessionLines } from "../../session/history.js";
 import { listTmuxPanes } from "../../session/tmux.js";
 import { adapterForPane } from "../../session/adapters/index.js";
 
@@ -44,13 +44,15 @@ export async function sendSessionPicker(ctx: Context): Promise<void> {
 
     const projectName = pane.cwd.split("/").pop() || pane.cwd;
     const lines = await readSessionLines(found.filePath).catch(() => []);
-    const parsed = parseJsonlLines(lines);
+    // Use the adapter's parser for an accurate last-message preview across CLIs.
+    const parsed = adapter.parseAssistantText(lines);
+    const preview = (parsed.text ?? "").slice(0, 200).replace(/\n/g, " ");
 
     sessions.push({
       sessionId: found.sessionId,
       cwd: pane.cwd,
       projectName,
-      lastMessage: parsed.lastMessage,
+      lastMessage: preview,
       cliName: adapter.name,
     });
   }
